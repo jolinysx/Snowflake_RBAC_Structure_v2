@@ -89,7 +89,7 @@ WHEN NOT MATCHED THEN
     VALUES (source.ENV, source.MAX_CLONES, source.EXPIRY, source.DB_CLONE, source.SCHEMA_CLONE);
 
 CREATE TABLE IF NOT EXISTS ADMIN.CLONES.RBAC_CLONE_REGISTRY (
-    CLONE_ID VARCHAR(36) DEFAULT UUID_STRING() PRIMARY KEY,
+    CLONE_ID VARCHAR(36) DEFAULT UUID_STRING() NOT NULL,
     CLONE_TYPE VARCHAR(20) NOT NULL,
     ENVIRONMENT VARCHAR(10) NOT NULL,
     SOURCE_DATABASE VARCHAR(255) NOT NULL,
@@ -108,9 +108,8 @@ CREATE TABLE IF NOT EXISTS ADMIN.CLONES.RBAC_CLONE_REGISTRY (
     METADATA VARIANT
 );
 
--- Index for fast lookup by user
-CREATE INDEX IF NOT EXISTS IDX_CLONE_REGISTRY_USER 
-ON ADMIN.CLONES.RBAC_CLONE_REGISTRY (CREATED_BY, ENVIRONMENT, STATUS);
+-- Note: Regular Snowflake tables don't support indexes or enforced primary keys.
+-- Snowflake's automatic clustering and pruning handle query optimization.
 
 -- #############################################################################
 -- SECTION 2: CLONE LIMIT MANAGEMENT
@@ -178,7 +177,7 @@ AS
 $$
 BEGIN
     -- Validate environment
-    IF P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD') THEN
+    IF (P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid environment. Must be one of: DEV, TST, UAT, PPE, PRD'
@@ -271,7 +270,7 @@ BEGIN
     v_user_clean := TRIM(v_user_clean, '_');
     
     -- Validate environment
-    IF P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD') THEN
+    IF (P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid environment. Must be one of: DEV, TST, UAT, PPE, PRD'
@@ -279,7 +278,7 @@ BEGIN
     END IF;
     
     -- Validate clone type
-    IF UPPER(P_CLONE_TYPE) NOT IN ('SCHEMA', 'DATABASE') THEN
+    IF (UPPER(P_CLONE_TYPE) NOT IN ('SCHEMA', 'DATABASE')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid clone type. Must be SCHEMA or DATABASE'
@@ -287,7 +286,7 @@ BEGIN
     END IF;
     
     -- Schema clone requires schema name
-    IF UPPER(P_CLONE_TYPE) = 'SCHEMA' AND P_SOURCE_SCHEMA IS NULL THEN
+    IF (UPPER(P_CLONE_TYPE) = 'SCHEMA' AND P_SOURCE_SCHEMA IS NULL) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Schema name required for SCHEMA clone type'
@@ -301,7 +300,7 @@ BEGIN
     WHERE ENVIRONMENT = P_ENVIRONMENT;
     
     -- Check if clone type is allowed
-    IF UPPER(P_CLONE_TYPE) = 'DATABASE' AND NOT v_allow_db_clone THEN
+    IF (UPPER(P_CLONE_TYPE) = 'DATABASE' AND NOT v_allow_db_clone) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Database clones are not allowed in ' || P_ENVIRONMENT || ' environment',
@@ -309,7 +308,7 @@ BEGIN
         );
     END IF;
     
-    IF UPPER(P_CLONE_TYPE) = 'SCHEMA' AND NOT v_allow_schema_clone THEN
+    IF (UPPER(P_CLONE_TYPE) = 'SCHEMA' AND NOT v_allow_schema_clone) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Schema clones are not allowed in ' || P_ENVIRONMENT || ' environment'
@@ -331,7 +330,7 @@ BEGIN
       AND STATUS = 'ACTIVE';
     
     -- Check clone limit
-    IF v_clone_count >= v_max_clones THEN
+    IF (v_clone_count >= v_max_clones) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Clone limit reached. You have ' || v_clone_count || ' of ' || v_max_clones || ' allowed clones in ' || P_ENVIRONMENT,
@@ -354,7 +353,7 @@ BEGIN
     v_full_source_db := P_SOURCE_DATABASE || '_' || P_ENVIRONMENT;
     v_dbadmin_role := 'SRF_' || P_ENVIRONMENT || '_DBADMIN';
     
-    IF UPPER(P_CLONE_TYPE) = 'SCHEMA' THEN
+    IF (UPPER(P_CLONE_TYPE) = 'SCHEMA') THEN
         -- Schema clone
         v_clone_schema := P_SOURCE_SCHEMA || '_CLONE_' || v_user_clean || '_' || v_clone_number;
         v_clone_db := v_full_source_db;
@@ -371,7 +370,7 @@ BEGIN
     END IF;
     
     -- Calculate expiration
-    IF v_expiry_days IS NOT NULL THEN
+    IF (v_expiry_days IS NOT NULL) THEN
         v_expires_at := DATEADD(DAY, v_expiry_days, CURRENT_TIMESTAMP());
     ELSE
         v_expires_at := NULL;
@@ -381,9 +380,9 @@ BEGIN
     v_clone_id := UUID_STRING();
     
     -- Create the clone
-    IF UPPER(P_CLONE_TYPE) = 'SCHEMA' THEN
+    IF (UPPER(P_CLONE_TYPE) = 'SCHEMA') THEN
         -- Clone schema
-        IF P_INCLUDE_DATA THEN
+        IF (P_INCLUDE_DATA) THEN
             v_sql := 'CREATE OR REPLACE SCHEMA ' || v_clone_name || 
                      ' CLONE ' || v_full_source_db || '.' || P_SOURCE_SCHEMA;
         ELSE
@@ -433,7 +432,7 @@ BEGIN
         
     ELSE
         -- Clone database
-        IF P_INCLUDE_DATA THEN
+        IF (P_INCLUDE_DATA) THEN
             v_sql := 'CREATE OR REPLACE DATABASE ' || v_clone_db || ' CLONE ' || v_full_source_db;
         ELSE
             v_sql := 'CREATE OR REPLACE DATABASE ' || v_clone_db || ' CLONE ' || v_full_source_db || ' COPY GRANTS';
@@ -456,7 +455,7 @@ BEGIN
     END IF;
     
     -- Add comment to clone
-    IF UPPER(P_CLONE_TYPE) = 'SCHEMA' THEN
+    IF (UPPER(P_CLONE_TYPE) = 'SCHEMA') THEN
         v_sql := 'COMMENT ON SCHEMA ' || v_clone_name || ' IS ''Clone created by ' || v_current_user || 
                  ' on ' || CURRENT_TIMESTAMP()::VARCHAR || 
                  '. Clone ID: ' || v_clone_id || 
@@ -643,7 +642,7 @@ AS
 $$
 DECLARE
     v_current_user VARCHAR := CURRENT_USER();
-    v_clone OBJECT;
+    v_clone VARIANT;
     v_clone_id VARCHAR;
     v_clone_name VARCHAR;
     v_clone_type VARCHAR;
@@ -669,7 +668,7 @@ BEGIN
     WHERE (CLONE_ID = P_CLONE_IDENTIFIER OR CLONE_NAME = P_CLONE_IDENTIFIER)
       AND STATUS = 'ACTIVE';
     
-    IF v_clone IS NULL THEN
+    IF (v_clone IS NULL) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Clone not found or already deleted',
@@ -688,7 +687,7 @@ BEGIN
     v_created_by := v_clone:created_by::VARCHAR;
     
     -- Check ownership (unless admin or force)
-    IF v_created_by != v_current_user AND NOT P_FORCE THEN
+    IF (v_created_by != v_current_user AND NOT P_FORCE) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'You can only delete your own clones. Use P_FORCE=TRUE if you have admin privileges.',
@@ -697,7 +696,7 @@ BEGIN
     END IF;
     
     -- Drop the clone
-    IF v_clone_type = 'SCHEMA' THEN
+    IF (v_clone_type = 'SCHEMA') THEN
         -- Drop database roles first
         BEGIN
             v_sql := 'DROP DATABASE ROLE IF EXISTS ' || v_clone_db || '.' || v_db_role_write;
@@ -794,11 +793,11 @@ BEGIN
       AND STATUS = 'ACTIVE';
     
     -- Only delete if at or over limit
-    IF v_clone_count >= v_max_clones THEN
+    IF (v_clone_count >= v_max_clones) THEN
         -- Determine which clone to delete
-        IF P_CLONE_TO_REPLACE IS NOT NULL THEN
+        IF (P_CLONE_TO_REPLACE IS NOT NULL) THEN
             v_oldest_clone_id := P_CLONE_TO_REPLACE;
-        ELSEIF P_REPLACE_OLDEST THEN
+        ELSEIF (P_REPLACE_OLDEST) THEN
             -- Find oldest clone
             SELECT CLONE_ID INTO v_oldest_clone_id
             FROM RBAC_CLONE_REGISTRY
@@ -817,9 +816,9 @@ BEGIN
         END IF;
         
         -- Delete the old clone
-        CALL RBAC_DELETE_CLONE(v_oldest_clone_id, FALSE) INTO v_delete_result;
+        CALL ADMIN.CLONES.RBAC_DELETE_CLONE(v_oldest_clone_id, FALSE) INTO v_delete_result;
         
-        IF v_delete_result:status != 'SUCCESS' THEN
+        IF (v_delete_result:status != 'SUCCESS') THEN
             RETURN OBJECT_CONSTRUCT(
                 'status', 'ERROR',
                 'message', 'Failed to delete old clone',
@@ -829,7 +828,7 @@ BEGIN
     END IF;
     
     -- Create new clone
-    CALL RBAC_CREATE_CLONE(
+    CALL ADMIN.CLONES.RBAC_CREATE_CLONE(
         P_ENVIRONMENT,
         P_SOURCE_DATABASE,
         P_SOURCE_SCHEMA,
@@ -900,8 +899,8 @@ BEGIN
         FROM RBAC_CLONE_REGISTRY
         WHERE CLONE_ID = v_clone_id;
         
-        IF NOT P_DRY_RUN THEN
-            CALL RBAC_DELETE_CLONE(v_clone_id, TRUE) INTO v_delete_result;
+        IF (NOT P_DRY_RUN) THEN
+            CALL ADMIN.CLONES.RBAC_DELETE_CLONE(v_clone_id, TRUE) INTO v_delete_result;
             v_deleted_clones := ARRAY_APPEND(v_deleted_clones, OBJECT_CONSTRUCT(
                 'clone_id', v_clone_id,
                 'result', v_delete_result
@@ -933,7 +932,7 @@ $$;
  * Purpose: Returns summary statistics about clones
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_GET_CLONE_SUMMARY(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.CLONES.RBAC_GET_CLONE_SUMMARY(
     P_ENVIRONMENT VARCHAR DEFAULT NULL
 )
 RETURNS VARIANT
@@ -1005,7 +1004,7 @@ GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_GET_CLONE_LIMITS() TO ROLE PUBLIC;
 
 -- Admin procedures
 GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_SET_CLONE_LIMIT(VARCHAR, INTEGER, INTEGER, BOOLEAN, BOOLEAN) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_LIST_ALL_CLONES(VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_LIST_ALL_CLONES(VARCHAR, VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_CLEANUP_EXPIRED_CLONES(VARCHAR, BOOLEAN) TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_GET_CLONE_SUMMARY(VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_LIST_ALL_CLONES(VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_LIST_ALL_CLONES(VARCHAR, VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_CLEANUP_EXPIRED_CLONES(VARCHAR, BOOLEAN) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_GET_CLONE_SUMMARY(VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;

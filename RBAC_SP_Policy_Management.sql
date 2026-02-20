@@ -213,83 +213,85 @@ CREATE TABLE IF NOT EXISTS ADMIN.SECURITY.POLICY_EXCEPTIONS (
  *   P_TEMPLATE          - Template name (RESTRICTIVE, STANDARD, RELAXED, SERVICE)
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE ADMIN.SECURITY.POLICY_CREATE_NETWORK_POLICY(
+CREATE OR REPLACE PROCEDURE ADMIN.SECURITY.POLICY_CREATE_NETWORK_POLICY(
     P_POLICY_NAME VARCHAR,
     P_ALLOWED_IP_LIST ARRAY,
-    P_BLOCKED_IP_LIST ARRAY DEFAULT NULL,
-    P_COMMENT VARCHAR DEFAULT NULL,
-    P_TEMPLATE VARCHAR DEFAULT NULL
+    P_BLOCKED_IP_LIST ARRAY,
+    P_COMMENT VARCHAR,
+    P_TEMPLATE VARCHAR
 )
 RETURNS VARIANT
-LANGUAGE SQL
+LANGUAGE JAVASCRIPT
 EXECUTE AS OWNER
 AS
 $$
-DECLARE
-    v_result OBJECT;
-    v_allowed_str VARCHAR;
-    v_blocked_str VARCHAR;
-    v_sql VARCHAR;
-BEGIN
-    v_allowed_str := ARRAY_TO_STRING(P_ALLOWED_IP_LIST, ',');
+    var allowedStr = P_ALLOWED_IP_LIST.join(',');
+    var blockedStr = '';
     
-    IF P_BLOCKED_IP_LIST IS NOT NULL AND ARRAY_SIZE(P_BLOCKED_IP_LIST) > 0 THEN
-        v_blocked_str := ARRAY_TO_STRING(P_BLOCKED_IP_LIST, ',');
-    END IF;
+    if (P_BLOCKED_IP_LIST && P_BLOCKED_IP_LIST.length > 0) {
+        blockedStr = P_BLOCKED_IP_LIST.join(',');
+    }
     
-    v_sql := 'CREATE OR REPLACE NETWORK POLICY ' || P_POLICY_NAME || 
-             ' ALLOWED_IP_LIST = (' || v_allowed_str || ')';
+    var sql = 'CREATE OR REPLACE NETWORK POLICY ' + P_POLICY_NAME + 
+              ' ALLOWED_IP_LIST = (' + allowedStr + ')';
     
-    IF v_blocked_str IS NOT NULL THEN
-        v_sql := v_sql || ' BLOCKED_IP_LIST = (' || v_blocked_str || ')';
-    END IF;
+    if (blockedStr !== '') {
+        sql += ' BLOCKED_IP_LIST = (' + blockedStr + ')';
+    }
     
-    IF P_COMMENT IS NOT NULL THEN
-        v_sql := v_sql || ' COMMENT = ''' || P_COMMENT || '''';
-    END IF;
+    if (P_COMMENT) {
+        sql += ' COMMENT = \'' + P_COMMENT + '\'';
+    }
     
-    EXECUTE IMMEDIATE v_sql;
-    
-    INSERT INTO ADMIN.SECURITY.POLICY_REGISTRY 
-        (POLICY_TYPE, POLICY_NAME, POLICY_TEMPLATE, DESCRIPTION, CONFIGURATION)
-    VALUES (
-        'NETWORK',
-        P_POLICY_NAME,
-        P_TEMPLATE,
-        P_COMMENT,
-        OBJECT_CONSTRUCT(
-            'allowed_ip_list', P_ALLOWED_IP_LIST,
-            'blocked_ip_list', P_BLOCKED_IP_LIST
-        )
-    );
-    
-    INSERT INTO ADMIN.SECURITY.POLICY_AUDIT_LOG 
-        (POLICY_TYPE, POLICY_NAME, ACTION, NEW_VALUE, RESULT)
-    VALUES (
-        'NETWORK',
-        P_POLICY_NAME,
-        'CREATE',
-        OBJECT_CONSTRUCT('allowed_ip_list', P_ALLOWED_IP_LIST, 'blocked_ip_list', P_BLOCKED_IP_LIST),
-        'SUCCESS'
-    );
-    
-    v_result := OBJECT_CONSTRUCT(
-        'status', 'SUCCESS',
-        'policy_type', 'NETWORK',
-        'policy_name', P_POLICY_NAME,
-        'allowed_ips', ARRAY_SIZE(P_ALLOWED_IP_LIST),
-        'blocked_ips', COALESCE(ARRAY_SIZE(P_BLOCKED_IP_LIST), 0)
-    );
-    
-    RETURN v_result;
-EXCEPTION
-    WHEN OTHER THEN
-        INSERT INTO ADMIN.SECURITY.POLICY_AUDIT_LOG 
-            (POLICY_TYPE, POLICY_NAME, ACTION, RESULT, ERROR_MESSAGE)
-        VALUES ('NETWORK', P_POLICY_NAME, 'CREATE', 'FAILED', SQLERRM);
+    try {
+        snowflake.createStatement({sqlText: sql}).execute();
         
-        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', SQLERRM);
-END;
+        snowflake.createStatement({
+            sqlText: `INSERT INTO ADMIN.SECURITY.POLICY_REGISTRY 
+                (POLICY_TYPE, POLICY_NAME, POLICY_TEMPLATE, DESCRIPTION, CONFIGURATION)
+            VALUES (?, ?, ?, ?, PARSE_JSON(?))`,
+            binds: [
+                'NETWORK',
+                P_POLICY_NAME,
+                P_TEMPLATE,
+                P_COMMENT,
+                JSON.stringify({
+                    allowed_ip_list: P_ALLOWED_IP_LIST,
+                    blocked_ip_list: P_BLOCKED_IP_LIST
+                })
+            ]
+        }).execute();
+        
+        snowflake.createStatement({
+            sqlText: `INSERT INTO ADMIN.SECURITY.POLICY_AUDIT_LOG 
+                (POLICY_TYPE, POLICY_NAME, ACTION, NEW_VALUE, RESULT)
+            VALUES (?, ?, ?, PARSE_JSON(?), ?)`,
+            binds: [
+                'NETWORK',
+                P_POLICY_NAME,
+                'CREATE',
+                JSON.stringify({allowed_ip_list: P_ALLOWED_IP_LIST, blocked_ip_list: P_BLOCKED_IP_LIST}),
+                'SUCCESS'
+            ]
+        }).execute();
+        
+        return {
+            status: 'SUCCESS',
+            policy_type: 'NETWORK',
+            policy_name: P_POLICY_NAME,
+            allowed_ips: P_ALLOWED_IP_LIST.length,
+            blocked_ips: P_BLOCKED_IP_LIST ? P_BLOCKED_IP_LIST.length : 0
+        };
+    } catch(err) {
+        snowflake.createStatement({
+            sqlText: `INSERT INTO ADMIN.SECURITY.POLICY_AUDIT_LOG 
+                (POLICY_TYPE, POLICY_NAME, ACTION, RESULT, ERROR_MESSAGE)
+            VALUES (?, ?, ?, ?, ?)`,
+            binds: ['NETWORK', P_POLICY_NAME, 'CREATE', 'FAILED', err.message]
+        }).execute();
+        
+        return {status: 'ERROR', message: err.message};
+    }
 $$;
 
 /*******************************************************************************
@@ -310,7 +312,7 @@ EXECUTE AS OWNER
 AS
 $$
 DECLARE
-    v_result OBJECT;
+    v_result VARIANT;
     v_current_config VARIANT;
     v_current_list ARRAY;
     v_new_list ARRAY;
@@ -320,18 +322,18 @@ BEGIN
     FROM ADMIN.SECURITY.POLICY_REGISTRY
     WHERE POLICY_TYPE = 'NETWORK' AND POLICY_NAME = P_POLICY_NAME;
     
-    IF P_LIST_TYPE = 'ALLOWED' THEN
+    IF (P_LIST_TYPE = 'ALLOWED') THEN
         v_current_list := v_current_config:allowed_ip_list::ARRAY;
     ELSE
         v_current_list := v_current_config:blocked_ip_list::ARRAY;
     END IF;
     
-    IF P_ACTION = 'ADD' THEN
+    IF (P_ACTION = 'ADD') THEN
         v_new_list := ARRAY_CAT(COALESCE(v_current_list, ARRAY_CONSTRUCT()), P_IP_LIST);
-    ELSEIF P_ACTION = 'REMOVE' THEN
+    ELSEIF (P_ACTION = 'REMOVE') THEN
         v_new_list := ARRAY_CONSTRUCT();
         FOR i IN 0 TO ARRAY_SIZE(v_current_list) - 1 DO
-            IF NOT ARRAY_CONTAINS(v_current_list[i]::VARIANT, P_IP_LIST) THEN
+            IF (NOT ARRAY_CONTAINS(v_current_list[i]::VARIANT, P_IP_LIST)) THEN
                 v_new_list := ARRAY_APPEND(v_new_list, v_current_list[i]);
             END IF;
         END FOR;
@@ -342,7 +344,7 @@ BEGIN
     
     EXECUTE IMMEDIATE v_sql;
     
-    IF P_LIST_TYPE = 'ALLOWED' THEN
+    IF (P_LIST_TYPE = 'ALLOWED') THEN
         UPDATE ADMIN.SECURITY.POLICY_REGISTRY
         SET CONFIGURATION = OBJECT_INSERT(CONFIGURATION, 'allowed_ip_list', v_new_list, TRUE),
             UPDATED_BY = CURRENT_USER(),
@@ -397,11 +399,11 @@ EXECUTE AS OWNER
 AS
 $$
 DECLARE
-    v_result OBJECT;
+    v_result VARIANT;
     v_sql VARCHAR;
     v_previous_policy VARCHAR;
 BEGIN
-    IF P_ASSIGNMENT_LEVEL = 'ACCOUNT' THEN
+    IF (P_ASSIGNMENT_LEVEL = 'ACCOUNT') THEN
         v_sql := 'ALTER ACCOUNT SET NETWORK_POLICY = ' || P_POLICY_NAME;
         
         UPDATE ADMIN.SECURITY.POLICY_REGISTRY
@@ -410,10 +412,10 @@ BEGIN
             UPDATED_AT = CURRENT_TIMESTAMP()
         WHERE POLICY_TYPE = 'NETWORK' AND POLICY_NAME = P_POLICY_NAME;
         
-    ELSEIF P_ASSIGNMENT_LEVEL = 'USER' THEN
+    ELSEIF (P_ASSIGNMENT_LEVEL = 'USER') THEN
         v_sql := 'ALTER USER ' || P_TARGET_NAME || ' SET NETWORK_POLICY = ' || P_POLICY_NAME;
         
-    ELSEIF P_ASSIGNMENT_LEVEL = 'INTEGRATION' THEN
+    ELSEIF (P_ASSIGNMENT_LEVEL = 'INTEGRATION') THEN
         v_sql := 'ALTER SECURITY INTEGRATION ' || P_TARGET_NAME || ' SET NETWORK_POLICY = ' || P_POLICY_NAME;
     END IF;
     
@@ -470,9 +472,9 @@ EXECUTE AS OWNER
 AS
 $$
 DECLARE
-    v_result OBJECT;
+    v_result VARIANT;
     v_sql VARCHAR;
-    v_config OBJECT;
+    v_config VARIANT;
 BEGIN
     v_sql := 'CREATE OR REPLACE PASSWORD POLICY ' || P_POLICY_NAME ||
              ' PASSWORD_MIN_LENGTH = ' || P_MIN_LENGTH ||
@@ -486,7 +488,7 @@ BEGIN
              ' PASSWORD_LOCKOUT_TIME_MINS = ' || P_LOCKOUT_TIME_MINS ||
              ' PASSWORD_HISTORY = ' || P_PASSWORD_HISTORY;
     
-    IF P_COMMENT IS NOT NULL THEN
+    IF (P_COMMENT IS NOT NULL) THEN
         v_sql := v_sql || ' COMMENT = ''' || P_COMMENT || '''';
     END IF;
     
@@ -548,7 +550,7 @@ $$
 DECLARE
     v_sql VARCHAR;
 BEGIN
-    IF P_ASSIGNMENT_LEVEL = 'ACCOUNT' THEN
+    IF (P_ASSIGNMENT_LEVEL = 'ACCOUNT') THEN
         v_sql := 'ALTER ACCOUNT SET PASSWORD POLICY ' || P_POLICY_NAME;
         
         UPDATE ADMIN.SECURITY.POLICY_REGISTRY
@@ -557,7 +559,7 @@ BEGIN
             UPDATED_AT = CURRENT_TIMESTAMP()
         WHERE POLICY_TYPE = 'PASSWORD' AND POLICY_NAME = P_POLICY_NAME;
         
-    ELSEIF P_ASSIGNMENT_LEVEL = 'USER' THEN
+    ELSEIF (P_ASSIGNMENT_LEVEL = 'USER') THEN
         v_sql := 'ALTER USER ' || P_TARGET_NAME || ' SET PASSWORD POLICY ' || P_POLICY_NAME;
     END IF;
     
@@ -607,13 +609,13 @@ AS
 $$
 DECLARE
     v_sql VARCHAR;
-    v_config OBJECT;
+    v_config VARIANT;
 BEGIN
     v_sql := 'CREATE OR REPLACE SESSION POLICY ' || P_POLICY_NAME ||
              ' SESSION_IDLE_TIMEOUT_MINS = ' || P_SESSION_IDLE_TIMEOUT_MINS ||
              ' SESSION_UI_IDLE_TIMEOUT_MINS = ' || P_SESSION_UI_IDLE_TIMEOUT_MINS;
     
-    IF P_COMMENT IS NOT NULL THEN
+    IF (P_COMMENT IS NOT NULL) THEN
         v_sql := v_sql || ' COMMENT = ''' || P_COMMENT || '''';
     END IF;
     
@@ -663,7 +665,7 @@ $$
 DECLARE
     v_sql VARCHAR;
 BEGIN
-    IF P_ASSIGNMENT_LEVEL = 'ACCOUNT' THEN
+    IF (P_ASSIGNMENT_LEVEL = 'ACCOUNT') THEN
         v_sql := 'ALTER ACCOUNT SET SESSION POLICY ' || P_POLICY_NAME;
         
         UPDATE ADMIN.SECURITY.POLICY_REGISTRY
@@ -672,7 +674,7 @@ BEGIN
             UPDATED_AT = CURRENT_TIMESTAMP()
         WHERE POLICY_TYPE = 'SESSION' AND POLICY_NAME = P_POLICY_NAME;
         
-    ELSEIF P_ASSIGNMENT_LEVEL = 'USER' THEN
+    ELSEIF (P_ASSIGNMENT_LEVEL = 'USER') THEN
         v_sql := 'ALTER USER ' || P_TARGET_NAME || ' SET SESSION POLICY ' || P_POLICY_NAME;
     END IF;
     
@@ -724,18 +726,18 @@ AS
 $$
 DECLARE
     v_sql VARCHAR;
-    v_config OBJECT;
+    v_config VARIANT;
 BEGIN
     v_sql := 'CREATE OR REPLACE AUTHENTICATION POLICY ' || P_POLICY_NAME ||
              ' AUTHENTICATION_METHODS = (' || ARRAY_TO_STRING(P_AUTH_METHODS, ',') || ')' ||
              ' MFA_AUTHENTICATION_METHODS = (' || ARRAY_TO_STRING(P_MFA_AUTH_METHODS, ',') || ')' ||
              ' CLIENT_TYPES = (' || ARRAY_TO_STRING(P_CLIENT_TYPES, ',') || ')';
     
-    IF P_SECURITY_INTEGRATIONS IS NOT NULL AND ARRAY_SIZE(P_SECURITY_INTEGRATIONS) > 0 THEN
+    IF (P_SECURITY_INTEGRATIONS IS NOT NULL AND ARRAY_SIZE(P_SECURITY_INTEGRATIONS) > 0) THEN
         v_sql := v_sql || ' SECURITY_INTEGRATIONS = (' || ARRAY_TO_STRING(P_SECURITY_INTEGRATIONS, ',') || ')';
     END IF;
     
-    IF P_COMMENT IS NOT NULL THEN
+    IF (P_COMMENT IS NOT NULL) THEN
         v_sql := v_sql || ' COMMENT = ''' || P_COMMENT || '''';
     END IF;
     
@@ -787,7 +789,7 @@ $$
 DECLARE
     v_sql VARCHAR;
 BEGIN
-    IF P_ASSIGNMENT_LEVEL = 'ACCOUNT' THEN
+    IF (P_ASSIGNMENT_LEVEL = 'ACCOUNT') THEN
         v_sql := 'ALTER ACCOUNT SET AUTHENTICATION POLICY ' || P_POLICY_NAME;
         
         UPDATE ADMIN.SECURITY.POLICY_REGISTRY
@@ -796,7 +798,7 @@ BEGIN
             UPDATED_AT = CURRENT_TIMESTAMP()
         WHERE POLICY_TYPE = 'AUTHENTICATION' AND POLICY_NAME = P_POLICY_NAME;
         
-    ELSEIF P_ASSIGNMENT_LEVEL = 'USER' THEN
+    ELSEIF (P_ASSIGNMENT_LEVEL = 'USER') THEN
         v_sql := 'ALTER USER ' || P_TARGET_NAME || ' SET AUTHENTICATION POLICY ' || P_POLICY_NAME;
     END IF;
     
@@ -912,11 +914,11 @@ BEGIN
     FROM ADMIN.SECURITY.POLICY_TEMPLATES
     WHERE TEMPLATE_NAME = P_TEMPLATE_NAME AND POLICY_TYPE = P_POLICY_TYPE;
     
-    IF v_config IS NULL THEN
+    IF (v_config IS NULL) THEN
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Template not found: ' || P_TEMPLATE_NAME || ' for ' || P_POLICY_TYPE);
     END IF;
     
-    IF P_POLICY_TYPE = 'PASSWORD' THEN
+    IF (P_POLICY_TYPE = 'PASSWORD') THEN
         CALL ADMIN.SECURITY.POLICY_CREATE_PASSWORD_POLICY(
             P_POLICY_NAME,
             v_config:min_length::INTEGER,
@@ -933,7 +935,7 @@ BEGIN
             P_TEMPLATE_NAME
         ) INTO v_result;
         
-    ELSEIF P_POLICY_TYPE = 'SESSION' THEN
+    ELSEIF (P_POLICY_TYPE = 'SESSION') THEN
         CALL ADMIN.SECURITY.POLICY_CREATE_SESSION_POLICY(
             P_POLICY_NAME,
             v_config:session_idle_timeout_mins::INTEGER,
@@ -942,7 +944,7 @@ BEGIN
             P_TEMPLATE_NAME
         ) INTO v_result;
         
-    ELSEIF P_POLICY_TYPE = 'AUTHENTICATION' THEN
+    ELSEIF (P_POLICY_TYPE = 'AUTHENTICATION') THEN
         CALL ADMIN.SECURITY.POLICY_CREATE_AUTHENTICATION_POLICY(
             P_POLICY_NAME,
             v_config:authentication_methods::ARRAY,
@@ -990,7 +992,7 @@ $$
 DECLARE
     res RESULTSET;
 BEGIN
-    IF P_POLICY_TYPE IS NULL THEN
+    IF (P_POLICY_TYPE IS NULL) THEN
         res := (SELECT POLICY_TYPE, POLICY_NAME, POLICY_TEMPLATE AS TEMPLATE,
                        APPLIED_TO_ACCOUNT, CONFIGURATION, STATUS, CREATED_AT
                 FROM ADMIN.SECURITY.POLICY_REGISTRY
@@ -1361,7 +1363,7 @@ BEGIN
       AND POLICY_NAME = P_POLICY_NAME 
       AND STATUS = 'ACTIVE';
     
-    IF v_assignments > 0 AND NOT P_FORCE THEN
+    IF (v_assignments > 0 AND NOT P_FORCE) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Policy has ' || v_assignments || ' active assignments. Use P_FORCE=TRUE to drop anyway.',

@@ -233,7 +233,6 @@ BEGIN
             COUNT_IF(REQUIRES_MASKING = TRUE) AS MASK_NEEDED
         FROM GOVERNANCE_DATA_CLASSIFICATIONS
         GROUP BY DATABASE_NAME
-        ORDER BY CNT DESC
     );
     
     -- Columns needing attention (critical but not verified)
@@ -251,8 +250,6 @@ BEGIN
     FROM GOVERNANCE_DATA_CLASSIFICATIONS
     WHERE (SENSITIVITY_LEVEL = 'CRITICAL' AND VERIFIED_BY IS NULL)
        OR (REQUIRES_MASKING = TRUE)
-    ORDER BY 
-        CASE SENSITIVITY_LEVEL WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 ELSE 3 END
     LIMIT 30;
     
     -- Recent classifications
@@ -264,7 +261,6 @@ BEGIN
         'classified_at', CLASSIFIED_AT
     )) INTO v_recent_classifications
     FROM GOVERNANCE_DATA_CLASSIFICATIONS
-    ORDER BY CLASSIFIED_AT DESC
     LIMIT 20;
     
     RETURN OBJECT_CONSTRUCT(
@@ -309,10 +305,14 @@ DECLARE
     v_tagged_count INTEGER;
     v_critical_unprotected INTEGER;
     v_recommendations ARRAY := ARRAY_CONSTRUCT();
+    v_classification_score INTEGER;
+    v_masking_score INTEGER;
+    v_rls_score INTEGER;
+    v_tagging_score INTEGER;
 BEGIN
     -- Score 1: Classification Coverage (max 25 points)
     SELECT COUNT(*) INTO v_classified_count FROM GOVERNANCE_DATA_CLASSIFICATIONS;
-    LET v_classification_score INTEGER := LEAST(FLOOR(v_classified_count / 10), 25);
+    v_classification_score := LEAST(FLOOR(v_classified_count / 10), 25);
     v_scores := ARRAY_APPEND(v_scores, OBJECT_CONSTRUCT(
         'category', 'DATA_CLASSIFICATION',
         'score', v_classification_score,
@@ -339,7 +339,7 @@ BEGIN
             AND p.STATUS = 'ACTIVE'
       );
     
-    LET v_masking_score INTEGER := CASE 
+    v_masking_score := CASE 
         WHEN v_critical_unprotected = 0 AND v_masked_count > 0 THEN 25
         WHEN v_critical_unprotected <= 5 THEN 20
         WHEN v_critical_unprotected <= 10 THEN 15
@@ -356,11 +356,11 @@ BEGIN
     v_total_score := v_total_score + v_masking_score;
     v_max_score := v_max_score + 25;
     
-    IF v_critical_unprotected > 0 THEN
+    IF (v_critical_unprotected > 0) THEN
         v_recommendations := ARRAY_APPEND(v_recommendations, OBJECT_CONSTRUCT(
             'priority', 'HIGH',
             'recommendation', 'Apply masking policies to ' || v_critical_unprotected || ' sensitive columns',
-            'action', 'CALL RBAC_APPLY_MASKING_TO_CLASSIFIED(''ADMIN'', ''GOVERNANCE'', NULL, NULL, FALSE);'
+            'action', 'CALL ADMIN.GOVERNANCE.RBAC_APPLY_MASKING_TO_CLASSIFIED(''ADMIN'', ''GOVERNANCE'', NULL, NULL, FALSE);'
         ));
     END IF;
     
@@ -369,7 +369,7 @@ BEGIN
     FROM GOVERNANCE_POLICY_APPLICATIONS
     WHERE POLICY_TYPE = 'ROW_ACCESS_POLICY' AND STATUS = 'ACTIVE';
     
-    LET v_rls_score INTEGER := LEAST(v_rls_count * 5, 25);
+    v_rls_score := LEAST(v_rls_count * 5, 25);
     v_scores := ARRAY_APPEND(v_scores, OBJECT_CONSTRUCT(
         'category', 'ROW_LEVEL_SECURITY',
         'score', v_rls_score,
@@ -382,7 +382,7 @@ BEGIN
     
     -- Score 4: Tagging Coverage (max 25 points)
     SELECT COUNT(*) INTO v_tagged_count FROM GOVERNANCE_TAG_APPLICATIONS;
-    LET v_tagging_score INTEGER := LEAST(FLOOR(v_tagged_count / 5), 25);
+    v_tagging_score := LEAST(FLOOR(v_tagged_count / 5), 25);
     v_scores := ARRAY_APPEND(v_scores, OBJECT_CONSTRUCT(
         'category', 'DATA_TAGGING',
         'score', v_tagging_score,
@@ -394,7 +394,7 @@ BEGIN
     v_max_score := v_max_score + 25;
     
     -- Generate recommendations
-    IF v_classification_score < 15 THEN
+    IF (v_classification_score < 15) THEN
         v_recommendations := ARRAY_APPEND(v_recommendations, OBJECT_CONSTRUCT(
             'priority', 'MEDIUM',
             'recommendation', 'Increase data classification coverage',
@@ -402,7 +402,7 @@ BEGIN
         ));
     END IF;
     
-    IF v_rls_score < 10 THEN
+    IF (v_rls_score < 10) THEN
         v_recommendations := ARRAY_APPEND(v_recommendations, OBJECT_CONSTRUCT(
             'priority', 'MEDIUM',
             'recommendation', 'Implement row-level security on sensitive tables',
@@ -453,10 +453,10 @@ EXECUTE AS CALLER
 AS
 $$
 DECLARE
-    v_by_database ARRAY;
-    v_by_classification ARRAY;
-    v_critical_data ARRAY;
-    v_data_flow ARRAY;
+    v_by_database VARIANT;
+    v_by_classification VARIANT;
+    v_critical_data VARIANT;
+    v_data_flow VARIANT;
     v_total_sensitive INTEGER;
 BEGIN
     -- Total sensitive columns
@@ -484,7 +484,6 @@ BEGIN
         FROM GOVERNANCE_DATA_CLASSIFICATIONS
         WHERE (P_SENSITIVITY_LEVEL IS NULL OR SENSITIVITY_LEVEL = P_SENSITIVITY_LEVEL)
         GROUP BY DATABASE_NAME
-        ORDER BY CRIT DESC, TOTAL DESC
     );
     
     -- By classification type with locations
@@ -503,24 +502,21 @@ BEGIN
         FROM GOVERNANCE_DATA_CLASSIFICATIONS
         WHERE (P_SENSITIVITY_LEVEL IS NULL OR SENSITIVITY_LEVEL = P_SENSITIVITY_LEVEL)
         GROUP BY CLASSIFICATION_TAG
-        ORDER BY CNT DESC
     );
     
     -- Critical data details
     SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
-        'location', DATABASE_NAME || '.' || SCHEMA_NAME || '.' || TABLE_NAME || '.' || COLUMN_NAME,
-        'classification', CLASSIFICATION_TAG,
-        'data_type', DATA_TYPE_CATEGORY,
-        'is_protected', EXISTS (
-            SELECT 1 FROM GOVERNANCE_POLICY_APPLICATIONS p
-            WHERE p.TARGET_DATABASE = GOVERNANCE_DATA_CLASSIFICATIONS.DATABASE_NAME
-              AND p.TARGET_COLUMN = GOVERNANCE_DATA_CLASSIFICATIONS.COLUMN_NAME
-              AND p.STATUS = 'ACTIVE'
-        )
+        'location', c.DATABASE_NAME || '.' || c.SCHEMA_NAME || '.' || c.TABLE_NAME || '.' || c.COLUMN_NAME,
+        'classification', c.CLASSIFICATION_TAG,
+        'data_type', c.DATA_TYPE_CATEGORY,
+        'is_protected', IFF(p.TARGET_COLUMN IS NOT NULL, TRUE, FALSE)
     )) INTO v_critical_data
-    FROM GOVERNANCE_DATA_CLASSIFICATIONS
-    WHERE SENSITIVITY_LEVEL = 'CRITICAL'
-    ORDER BY DATABASE_NAME, SCHEMA_NAME, TABLE_NAME
+    FROM GOVERNANCE_DATA_CLASSIFICATIONS c
+    LEFT JOIN GOVERNANCE_POLICY_APPLICATIONS p
+        ON p.TARGET_DATABASE = c.DATABASE_NAME
+        AND p.TARGET_COLUMN = c.COLUMN_NAME
+        AND p.STATUS = 'ACTIVE'
+    WHERE c.SENSITIVITY_LEVEL = 'CRITICAL'
     LIMIT 50;
     
     RETURN OBJECT_CONSTRUCT(
@@ -547,7 +543,7 @@ $$;
  * RBAC STORED PROCEDURE: Scan for Unprotected Sensitive Data
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_SCAN_UNPROTECTED_DATA(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.GOVERNANCE.RBAC_SCAN_UNPROTECTED_DATA(
     P_DATABASE VARCHAR DEFAULT NULL,
     P_SCHEMA VARCHAR DEFAULT NULL
 )
@@ -592,8 +588,6 @@ BEGIN
       )
       AND (P_DATABASE IS NULL OR DATABASE_NAME = P_DATABASE)
       AND (P_SCHEMA IS NULL OR SCHEMA_NAME = P_SCHEMA)
-    ORDER BY 
-        CASE SENSITIVITY_LEVEL WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 ELSE 3 END
     LIMIT 100;
     
     -- Count by severity
@@ -675,12 +669,12 @@ BEGIN
             OBJECT_CONSTRUCT(
                 'action', 'CLASSIFY_SENSITIVE',
                 'description', 'Run auto-classification on tables with potentially sensitive data',
-                'command', 'CALL RBAC_AUTO_CLASSIFY_TABLE(database, schema, table);'
+                'command', 'CALL ADMIN.GOVERNANCE.RBAC_AUTO_CLASSIFY_TABLE(database, schema, table);'
             ),
             OBJECT_CONSTRUCT(
                 'action', 'APPLY_MASKING',
                 'description', 'Apply masking policies to classified sensitive columns',
-                'command', 'CALL RBAC_APPLY_MASKING_TO_CLASSIFIED(''ADMIN'', ''GOVERNANCE'', NULL, NULL, FALSE);'
+                'command', 'CALL ADMIN.GOVERNANCE.RBAC_APPLY_MASKING_TO_CLASSIFIED(''ADMIN'', ''GOVERNANCE'', NULL, NULL, FALSE);'
             )
         )
     );
@@ -695,7 +689,7 @@ $$;
  * RBAC STORED PROCEDURE: Governance Audit Report
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_GOVERNANCE_AUDIT_REPORT(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.GOVERNANCE.RBAC_GOVERNANCE_AUDIT_REPORT(
     P_START_DATE DATE DEFAULT NULL,
     P_END_DATE DATE DEFAULT NULL
 )
@@ -751,7 +745,6 @@ BEGIN
         FROM GOVERNANCE_AUDIT_LOG
         WHERE TIMESTAMP::DATE BETWEEN v_start AND v_end
         GROUP BY PERFORMED_BY
-        ORDER BY CNT DESC
         LIMIT 20
     );
     
@@ -767,7 +760,6 @@ BEGIN
     )) INTO v_recent_activity
     FROM GOVERNANCE_AUDIT_LOG
     WHERE TIMESTAMP::DATE BETWEEN v_start AND v_end
-    ORDER BY TIMESTAMP DESC
     LIMIT 50;
     
     -- Policy changes (creates and removes)
@@ -781,7 +773,6 @@ BEGIN
     FROM GOVERNANCE_AUDIT_LOG
     WHERE TIMESTAMP::DATE BETWEEN v_start AND v_end
       AND ACTION IN ('CREATE', 'REMOVE', 'DROP')
-    ORDER BY TIMESTAMP DESC
     LIMIT 30;
     
     RETURN OBJECT_CONSTRUCT(
@@ -825,27 +816,27 @@ DECLARE
     v_alerts ARRAY := ARRAY_CONSTRUCT();
 BEGIN
     -- Gather dashboards
-    CALL RBAC_POLICY_COVERAGE_DASHBOARD(NULL) INTO v_coverage;
-    CALL RBAC_CLASSIFICATION_STATUS_DASHBOARD() INTO v_classification;
-    CALL RBAC_GOVERNANCE_COMPLIANCE_SCORECARD() INTO v_scorecard;
-    CALL RBAC_SCAN_UNPROTECTED_DATA(NULL, NULL) INTO v_unprotected;
+    CALL ADMIN.GOVERNANCE.RBAC_POLICY_COVERAGE_DASHBOARD(NULL) INTO v_coverage;
+    CALL ADMIN.GOVERNANCE.RBAC_CLASSIFICATION_STATUS_DASHBOARD() INTO v_classification;
+    CALL ADMIN.GOVERNANCE.RBAC_GOVERNANCE_COMPLIANCE_SCORECARD() INTO v_scorecard;
+    CALL ADMIN.GOVERNANCE.RBAC_SCAN_UNPROTECTED_DATA(NULL, NULL) INTO v_unprotected;
     
     -- Determine overall health
-    IF v_unprotected:risk_summary:risk_level = 'CRITICAL' THEN
+    IF (v_unprotected:risk_summary:risk_level = 'CRITICAL') THEN
         v_overall_health := 'CRITICAL';
         v_alerts := ARRAY_APPEND(v_alerts, OBJECT_CONSTRUCT(
             'level', 'CRITICAL',
             'message', 'Critical sensitive data is unprotected',
             'action', 'Apply masking policies immediately'
         ));
-    ELSEIF v_scorecard:overall:status = 'NON_COMPLIANT' THEN
+    ELSEIF (v_scorecard:overall:status = 'NON_COMPLIANT') THEN
         v_overall_health := 'WARNING';
         v_alerts := ARRAY_APPEND(v_alerts, OBJECT_CONSTRUCT(
             'level', 'WARNING',
             'message', 'Governance compliance score is below threshold',
             'action', 'Review compliance scorecard recommendations'
         ));
-    ELSEIF v_coverage:unprotected_count > 10 THEN
+    ELSEIF (v_coverage:unprotected_count > 10) THEN
         v_overall_health := 'ATTENTION';
         v_alerts := ARRAY_APPEND(v_alerts, OBJECT_CONSTRUCT(
             'level', 'INFO',
@@ -883,15 +874,15 @@ $$;
 -- #############################################################################
 
 GRANT USAGE ON PROCEDURE ADMIN.GOVERNANCE.RBAC_POLICY_COVERAGE_DASHBOARD(VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_CLASSIFICATION_STATUS_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_GOVERNANCE_COMPLIANCE_SCORECARD() TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_SENSITIVE_DATA_MAP(VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_SCAN_UNPROTECTED_DATA(VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_GOVERNANCE_AUDIT_REPORT(DATE, DATE) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_GOVERNANCE_MONITORING_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.GOVERNANCE.RBAC_CLASSIFICATION_STATUS_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.GOVERNANCE.RBAC_GOVERNANCE_COMPLIANCE_SCORECARD() TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.GOVERNANCE.RBAC_SENSITIVE_DATA_MAP(VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.GOVERNANCE.RBAC_SCAN_UNPROTECTED_DATA(VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.GOVERNANCE.RBAC_GOVERNANCE_AUDIT_REPORT(DATE, DATE) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.GOVERNANCE.RBAC_GOVERNANCE_MONITORING_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
 
 -- Allow DBAdmins to view dashboards
-GRANT USAGE ON PROCEDURE RBAC_POLICY_COVERAGE_DASHBOARD(VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_CLASSIFICATION_STATUS_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_GOVERNANCE_COMPLIANCE_SCORECARD() TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_GOVERNANCE_MONITORING_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.GOVERNANCE.RBAC_POLICY_COVERAGE_DASHBOARD(VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.GOVERNANCE.RBAC_CLASSIFICATION_STATUS_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.GOVERNANCE.RBAC_GOVERNANCE_COMPLIANCE_SCORECARD() TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.GOVERNANCE.RBAC_GOVERNANCE_MONITORING_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;

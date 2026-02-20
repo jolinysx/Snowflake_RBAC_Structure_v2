@@ -64,9 +64,9 @@ CREATE TABLE IF NOT EXISTS ADMIN.HADR.HADR_REPLICATION_GROUPS (
     SOURCE_REGION VARCHAR(50) NOT NULL,
     TARGET_ACCOUNT VARCHAR(255) NOT NULL,
     TARGET_REGION VARCHAR(50) NOT NULL,
-    INCLUDED_DATABASES ARRAY,
-    INCLUDED_SHARES ARRAY,
-    INCLUDED_ACCOUNT_OBJECTS ARRAY,
+    INCLUDED_DATABASES VARIANT,
+    INCLUDED_SHARES VARIANT,
+    INCLUDED_ACCOUNT_OBJECTS VARIANT,
     IS_PRIMARY BOOLEAN DEFAULT TRUE,
     STATUS VARCHAR(20) DEFAULT 'ACTIVE',
     REPLICATION_SCHEDULE VARCHAR(100),
@@ -86,11 +86,11 @@ CREATE TABLE IF NOT EXISTS ADMIN.HADR.HADR_FAILOVER_GROUPS (
     FAILOVER_TYPE VARCHAR(20) NOT NULL,
     SOURCE_ACCOUNT VARCHAR(255) NOT NULL,
     TARGET_ACCOUNT VARCHAR(255) NOT NULL,
-    OBJECT_TYPES ARRAY,
-    DATABASES ARRAY,
+    OBJECT_TYPES VARIANT,
+    DATABASES VARIANT,
     STATUS VARCHAR(20) DEFAULT 'ACTIVE',
     IS_PRIMARY BOOLEAN DEFAULT TRUE,
-    ALLOWED_ACCOUNTS ARRAY,
+    ALLOWED_ACCOUNTS VARIANT,
     CREATED_BY VARCHAR(255) DEFAULT CURRENT_USER(),
     CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
     METADATA VARIANT,
@@ -199,7 +199,7 @@ DECLARE
     v_source_account VARCHAR;
     v_source_region VARCHAR;
     v_sql VARCHAR;
-    v_actions ARRAY := ARRAY_CONSTRUCT();
+    v_actions VARIANT := ARRAY_CONSTRUCT();
 BEGIN
     v_group_id := UUID_STRING();
     
@@ -208,7 +208,7 @@ BEGIN
     INTO v_source_account, v_source_region;
     
     -- Validate replication type
-    IF P_REPLICATION_TYPE NOT IN ('CROSS_REGION', 'CROSS_ACCOUNT') THEN
+    IF (P_REPLICATION_TYPE NOT IN ('CROSS_REGION', 'CROSS_ACCOUNT')) THEN
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Invalid replication type. Use: CROSS_REGION, CROSS_ACCOUNT');
     END IF;
     
@@ -271,7 +271,7 @@ BEGIN
         'rto_target_minutes', P_RTO_TARGET_MINUTES,
         'next_steps', ARRAY_CONSTRUCT(
             'Run on TARGET account: CREATE FAILOVER GROUP ' || P_GROUP_NAME || ' AS REPLICA OF ' || v_source_account || '.' || P_GROUP_NAME,
-            'Verify replication: CALL RBAC_CHECK_REPLICATION_STATUS(''' || P_GROUP_NAME || ''')'
+            'Verify replication: CALL ADMIN.HADR.RBAC_CHECK_REPLICATION_STATUS(''' || P_GROUP_NAME || ''')'
         ),
         'message', 'Replication group created on primary. Execute replica creation on target account.'
     );
@@ -397,7 +397,7 @@ AS
 $$
 DECLARE
     v_event_id VARCHAR;
-    v_group OBJECT;
+    v_group VARIANT;
     v_sql VARCHAR;
     v_start_time TIMESTAMP_NTZ;
 BEGIN
@@ -405,7 +405,7 @@ BEGIN
     v_start_time := CURRENT_TIMESTAMP();
     
     -- Safety check
-    IF NOT P_CONFIRM THEN
+    IF (NOT P_CONFIRM) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'CONFIRMATION_REQUIRED',
             'message', 'Failover is a critical operation. Set P_CONFIRM=TRUE to proceed.',
@@ -426,7 +426,7 @@ BEGIN
     FROM HADR_FAILOVER_GROUPS
     WHERE GROUP_NAME = P_GROUP_NAME;
     
-    IF v_group IS NULL THEN
+    IF (v_group IS NULL) THEN
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Failover group not found: ' || P_GROUP_NAME);
     END IF;
     
@@ -435,12 +435,12 @@ BEGIN
         EVENT_ID, FAILOVER_GROUP_ID, EVENT_TYPE, EVENT_REASON,
         SOURCE_ACCOUNT, TARGET_ACCOUNT, STATUS, INITIATED_AT
     ) VALUES (
-        v_event_id, v_group:failover_group_id::VARCHAR, P_FAILOVER_TYPE, P_REASON,
-        v_group:source_account::VARCHAR, v_group:target_account::VARCHAR, 'IN_PROGRESS', v_start_time
+        v_event_id, TO_VARCHAR(v_group:failover_group_id), P_FAILOVER_TYPE, P_REASON,
+        TO_VARCHAR(v_group:source_account), TO_VARCHAR(v_group:target_account), 'IN_PROGRESS', v_start_time
     );
     
     -- Execute failover
-    IF P_FAILOVER_TYPE = 'PLANNED' THEN
+    IF (P_FAILOVER_TYPE = 'PLANNED') THEN
         -- Planned failover - wait for sync
         v_sql := 'ALTER FAILOVER GROUP ' || P_GROUP_NAME || ' PRIMARY';
     ELSE
@@ -470,7 +470,7 @@ BEGIN
     -- Audit log
     INSERT INTO HADR_AUDIT_LOG (ACTION, OBJECT_TYPE, OBJECT_NAME, SOURCE_ACCOUNT, TARGET_ACCOUNT, STATUS, DETAILS)
     VALUES ('FAILOVER', 'FAILOVER_GROUP', P_GROUP_NAME, 
-            v_group:source_account::VARCHAR, v_group:target_account::VARCHAR, 'SUCCESS',
+            TO_VARCHAR(v_group:source_account), TO_VARCHAR(v_group:target_account), 'SUCCESS',
             OBJECT_CONSTRUCT('type', P_FAILOVER_TYPE, 'reason', P_REASON, 'event_id', v_event_id));
     
     RETURN OBJECT_CONSTRUCT(
@@ -478,10 +478,10 @@ BEGIN
         'event_id', v_event_id,
         'group_name', P_GROUP_NAME,
         'failover_type', P_FAILOVER_TYPE,
-        'previous_primary', v_group:source_account::VARCHAR,
-        'new_primary', v_group:target_account::VARCHAR,
+        'previous_primary', TO_VARCHAR(v_group:source_account),
+        'new_primary', TO_VARCHAR(v_group:target_account),
         'duration_minutes', DATEDIFF(MINUTE, v_start_time, CURRENT_TIMESTAMP()),
-        'message', 'Failover completed successfully. ' || v_group:target_account::VARCHAR || ' is now primary.'
+        'message', 'Failover completed successfully. ' || TO_VARCHAR(v_group:target_account) || ' is now primary.'
     );
 
 EXCEPTION
@@ -513,7 +513,7 @@ $$
 DECLARE
     v_result VARIANT;
 BEGIN
-    IF NOT P_CONFIRM THEN
+    IF (NOT P_CONFIRM) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'CONFIRMATION_REQUIRED',
             'message', 'Failback will return primary role to original account. Set P_CONFIRM=TRUE to proceed.',
@@ -522,15 +522,15 @@ BEGIN
     END IF;
     
     -- Failback is essentially a planned failover back to original
-    CALL RBAC_INITIATE_FAILOVER(P_GROUP_NAME, 'PLANNED', 'Failback to original primary', TRUE) INTO v_result;
+    CALL ADMIN.HADR.RBAC_INITIATE_FAILOVER(P_GROUP_NAME, 'PLANNED', 'Failback to original primary', TRUE) INTO v_result;
     
-    IF v_result:status = 'SUCCESS' THEN
+    IF (v_result:status = 'SUCCESS') THEN
         v_result := OBJECT_INSERT(v_result, 'operation', 'FAILBACK');
         v_result := OBJECT_INSERT(v_result, 'message', 'Failback completed. Original primary restored.');
     END IF;
     
     INSERT INTO HADR_AUDIT_LOG (ACTION, OBJECT_TYPE, OBJECT_NAME, STATUS)
-    VALUES ('FAILBACK', 'FAILOVER_GROUP', P_GROUP_NAME, v_result:status::VARCHAR);
+    VALUES ('FAILBACK', 'FAILOVER_GROUP', P_GROUP_NAME, TO_VARCHAR(v_result:status));
     
     RETURN v_result;
 
@@ -567,7 +567,7 @@ BEGIN
     v_test_id := UUID_STRING();
     
     -- Validate test type
-    IF P_TEST_TYPE NOT IN ('CONNECTIVITY', 'FAILOVER_SIMULATION', 'FULL_FAILOVER', 'DATA_VALIDATION') THEN
+    IF (P_TEST_TYPE NOT IN ('CONNECTIVITY', 'FAILOVER_SIMULATION', 'FULL_FAILOVER', 'DATA_VALIDATION')) THEN
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 
             'message', 'Invalid test type. Use: CONNECTIVITY, FAILOVER_SIMULATION, FULL_FAILOVER, DATA_VALIDATION');
     END IF;
@@ -621,8 +621,8 @@ EXECUTE AS CALLER
 AS
 $$
 DECLARE
-    v_test OBJECT;
-    v_results OBJECT := OBJECT_CONSTRUCT();
+    v_test VARIANT;
+    v_results VARIANT := OBJECT_CONSTRUCT();
     v_start_time TIMESTAMP_NTZ;
     v_passed BOOLEAN := TRUE;
     v_group_name VARCHAR;
@@ -640,14 +640,14 @@ BEGIN
     FROM HADR_DR_TESTS
     WHERE TEST_ID = P_TEST_ID;
     
-    IF v_test IS NULL THEN
+    IF (v_test IS NULL) THEN
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Test not found: ' || P_TEST_ID);
     END IF;
     
     -- Get group name
     SELECT GROUP_NAME INTO v_group_name
     FROM HADR_REPLICATION_GROUPS
-    WHERE GROUP_ID = v_test:replication_group_id::VARCHAR;
+    WHERE GROUP_ID = TO_VARCHAR(v_test:replication_group_id);
     
     -- Update test status
     UPDATE HADR_DR_TESTS
@@ -655,7 +655,7 @@ BEGIN
     WHERE TEST_ID = P_TEST_ID;
     
     -- Execute test based on type
-    CASE v_test:test_type::VARCHAR
+    CASE TO_VARCHAR(v_test:test_type)
         WHEN 'CONNECTIVITY' THEN
             -- Test connectivity to replica
             BEGIN
@@ -676,7 +676,7 @@ BEGIN
                 WHERE GROUP_NAME = v_group_name;
                 
                 v_results := OBJECT_INSERT(v_results, 'replication_lag_seconds', v_lag);
-                IF v_lag > 3600 THEN
+                IF (v_lag > 3600) THEN
                     v_passed := FALSE;
                     v_results := OBJECT_INSERT(v_results, 'replication_check', 'FAILED - lag exceeds 1 hour');
                 ELSE
@@ -720,14 +720,14 @@ BEGIN
     WHERE TEST_ID = P_TEST_ID;
     
     INSERT INTO HADR_AUDIT_LOG (ACTION, OBJECT_TYPE, OBJECT_NAME, STATUS, DETAILS)
-    VALUES ('EXECUTE_DR_TEST', 'DR_TEST', v_test:test_name::VARCHAR, IFF(v_passed, 'PASSED', 'FAILED'),
+    VALUES ('EXECUTE_DR_TEST', 'DR_TEST', TO_VARCHAR(v_test:test_name), IFF(v_passed, 'PASSED', 'FAILED'),
             OBJECT_CONSTRUCT('test_type', v_test:test_type, 'results', v_results));
     
     RETURN OBJECT_CONSTRUCT(
         'status', 'SUCCESS',
         'test_id', P_TEST_ID,
-        'test_name', v_test:test_name::VARCHAR,
-        'test_type', v_test:test_type::VARCHAR,
+        'test_name', TO_VARCHAR(v_test:test_name),
+        'test_type', TO_VARCHAR(v_test:test_type),
         'passed', v_passed,
         'duration_minutes', v_rto_achieved,
         'results', v_results,
@@ -752,7 +752,7 @@ $$;
  * RBAC STORED PROCEDURE: Check Replication Status
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_CHECK_REPLICATION_STATUS(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.HADR.RBAC_CHECK_REPLICATION_STATUS(
     P_GROUP_NAME VARCHAR DEFAULT NULL
 )
 RETURNS VARIANT
@@ -761,7 +761,7 @@ EXECUTE AS CALLER
 AS
 $$
 DECLARE
-    v_groups ARRAY;
+    v_groups VARIANT;
     v_overall_health VARCHAR := 'HEALTHY';
 BEGIN
     SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
@@ -781,11 +781,11 @@ BEGIN
     WHERE (P_GROUP_NAME IS NULL OR GROUP_NAME = P_GROUP_NAME);
     
     -- Check for any groups outside RPO
-    FOR i IN 0 TO ARRAY_SIZE(COALESCE(v_groups, ARRAY_CONSTRUCT())) - 1 DO
-        IF NOT v_groups[i]:within_rpo::BOOLEAN THEN
+    FOR i IN 0 TO ARRAY_SIZE(COALESCE(v_groups, ARRAY_CONSTRUCT())) - 1 LOOP
+        IF (NOT v_groups[i]:within_rpo::BOOLEAN) THEN
             v_overall_health := 'WARNING';
         END IF;
-    END FOR;
+    END LOOP;
     
     RETURN OBJECT_CONSTRUCT(
         'status', 'SUCCESS',
@@ -801,7 +801,7 @@ $$;
  * RBAC STORED PROCEDURE: List Failover Groups
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_LIST_FAILOVER_GROUPS()
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.HADR.RBAC_LIST_FAILOVER_GROUPS()
 RETURNS TABLE (
     GROUP_NAME VARCHAR,
     FAILOVER_TYPE VARCHAR,
@@ -809,7 +809,7 @@ RETURNS TABLE (
     TARGET_ACCOUNT VARCHAR,
     IS_PRIMARY BOOLEAN,
     STATUS VARCHAR,
-    DATABASES ARRAY
+    DATABASES VARIANT
 )
 LANGUAGE SQL
 EXECUTE AS CALLER
@@ -838,7 +838,7 @@ $$;
  * RBAC STORED PROCEDURE: List DR Tests
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_LIST_DR_TESTS(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.HADR.RBAC_LIST_DR_TESTS(
     P_STATUS VARCHAR DEFAULT NULL
 )
 RETURNS TABLE (
@@ -889,11 +889,11 @@ GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_INITIATE_FAILOVER(VARCHAR, VARCHAR, TEX
 GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_INITIATE_FAILBACK(VARCHAR, BOOLEAN) TO ROLE SRS_SECURITY_ADMIN;
 GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_SCHEDULE_DR_TEST(VARCHAR, VARCHAR, VARCHAR, TIMESTAMP_NTZ) TO ROLE SRS_SECURITY_ADMIN;
 GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_EXECUTE_DR_TEST(VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_CHECK_REPLICATION_STATUS(VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_LIST_FAILOVER_GROUPS() TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_LIST_DR_TESTS(VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_CHECK_REPLICATION_STATUS(VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_LIST_FAILOVER_GROUPS() TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_LIST_DR_TESTS(VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
 
 -- DBAdmins can view status (but not execute failover)
-GRANT USAGE ON PROCEDURE RBAC_CHECK_REPLICATION_STATUS(VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_LIST_FAILOVER_GROUPS() TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_LIST_DR_TESTS(VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_CHECK_REPLICATION_STATUS(VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_LIST_FAILOVER_GROUPS() TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_LIST_DR_TESTS(VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;

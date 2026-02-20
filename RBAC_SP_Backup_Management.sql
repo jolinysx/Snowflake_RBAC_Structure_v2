@@ -206,7 +206,7 @@ BEGIN
     v_expires_at := DATEADD(DAY, P_RETENTION_DAYS, CURRENT_TIMESTAMP());
     
     -- Determine backup type and naming
-    IF P_SOURCE_TABLE IS NOT NULL THEN
+    IF (P_SOURCE_TABLE IS NOT NULL) THEN
         v_backup_type := 'TABLE';
         v_backup_name := 'BKP_' || P_SOURCE_DATABASE || '_' || P_SOURCE_SCHEMA || '_' || P_SOURCE_TABLE || '_' || v_timestamp;
         v_source_object := P_SOURCE_DATABASE || '.' || P_SOURCE_SCHEMA || '.' || P_SOURCE_TABLE;
@@ -220,14 +220,13 @@ BEGIN
         EXECUTE IMMEDIATE v_sql;
         
         -- Create table clone
-        IF P_TIME_TRAVEL_POINT IS NOT NULL THEN
-            v_sql := 'CREATE TABLE ' || v_target_object || ' CLONE ' || v_source_object || 
-                     ' AT (TIMESTAMP => ''' || P_TIME_TRAVEL_POINT::VARCHAR || '''::TIMESTAMP_NTZ)';
+        IF (P_TIME_TRAVEL_POINT IS NOT NULL) THEN
+            v_sql := 'CREATE TABLE ' || v_target_object || ' CLONE ' || v_source_object || ' AT (TIMESTAMP => TO_TIMESTAMP_NTZ(''' || TO_VARCHAR(P_TIME_TRAVEL_POINT) || '''))';
         ELSE
             v_sql := 'CREATE TABLE ' || v_target_object || ' CLONE ' || v_source_object;
         END IF;
         
-    ELSEIF P_SOURCE_SCHEMA IS NOT NULL THEN
+    ELSEIF (P_SOURCE_SCHEMA IS NOT NULL) THEN
         v_backup_type := 'SCHEMA';
         v_backup_name := 'BKP_' || P_SOURCE_DATABASE || '_' || P_SOURCE_SCHEMA || '_' || v_timestamp;
         v_source_object := P_SOURCE_DATABASE || '.' || P_SOURCE_SCHEMA;
@@ -236,9 +235,8 @@ BEGIN
         v_target_object := v_target_db || '.' || v_target_schema;
         
         -- Create schema clone
-        IF P_TIME_TRAVEL_POINT IS NOT NULL THEN
-            v_sql := 'CREATE SCHEMA ' || v_target_object || ' CLONE ' || v_source_object ||
-                     ' AT (TIMESTAMP => ''' || P_TIME_TRAVEL_POINT::VARCHAR || '''::TIMESTAMP_NTZ)';
+        IF (P_TIME_TRAVEL_POINT IS NOT NULL) THEN
+            v_sql := 'CREATE SCHEMA ' || v_target_object || ' CLONE ' || v_source_object || ' AT (TIMESTAMP => TO_TIMESTAMP_NTZ(''' || TO_VARCHAR(P_TIME_TRAVEL_POINT) || '''))';
         ELSE
             v_sql := 'CREATE SCHEMA ' || v_target_object || ' CLONE ' || v_source_object;
         END IF;
@@ -251,9 +249,8 @@ BEGIN
         v_target_object := v_target_db;
         
         -- Create database clone
-        IF P_TIME_TRAVEL_POINT IS NOT NULL THEN
-            v_sql := 'CREATE DATABASE ' || v_target_db || ' CLONE ' || P_SOURCE_DATABASE ||
-                     ' AT (TIMESTAMP => ''' || P_TIME_TRAVEL_POINT::VARCHAR || '''::TIMESTAMP_NTZ)';
+        IF (P_TIME_TRAVEL_POINT IS NOT NULL) THEN
+            v_sql := 'CREATE DATABASE ' || v_target_db || ' CLONE ' || P_SOURCE_DATABASE || ' AT (TIMESTAMP => TO_TIMESTAMP_NTZ(''' || TO_VARCHAR(P_TIME_TRAVEL_POINT) || '''))';
         ELSE
             v_sql := 'CREATE DATABASE ' || v_target_db || ' CLONE ' || P_SOURCE_DATABASE;
         END IF;
@@ -263,14 +260,10 @@ BEGIN
     EXECUTE IMMEDIATE v_sql;
     
     -- Add comment to backup
-    IF v_backup_type = 'DATABASE' THEN
-        EXECUTE IMMEDIATE 'ALTER DATABASE ' || v_target_db || ' SET COMMENT = ''Backup: ' || v_backup_name || 
-                         ' | Source: ' || v_source_object || ' | Created: ' || CURRENT_TIMESTAMP()::VARCHAR || 
-                         ' | Expires: ' || v_expires_at::VARCHAR || ' | Tag: ' || P_BACKUP_TAG || '''';
-    ELSEIF v_backup_type = 'SCHEMA' THEN
-        EXECUTE IMMEDIATE 'ALTER SCHEMA ' || v_target_object || ' SET COMMENT = ''Backup: ' || v_backup_name || 
-                         ' | Source: ' || v_source_object || ' | Created: ' || CURRENT_TIMESTAMP()::VARCHAR || 
-                         ' | Expires: ' || v_expires_at::VARCHAR || ' | Tag: ' || P_BACKUP_TAG || '''';
+    IF (v_backup_type = 'DATABASE') THEN
+        EXECUTE IMMEDIATE 'ALTER DATABASE ' || v_target_db || ' SET COMMENT = ''Backup: ' || v_backup_name || ' | Source: ' || v_source_object || ' | Created: ' || TO_VARCHAR(CURRENT_TIMESTAMP()) || ' | Expires: ' || TO_VARCHAR(v_expires_at) || ' | Tag: ' || P_BACKUP_TAG || '''';
+    ELSEIF (v_backup_type = 'SCHEMA') THEN
+        EXECUTE IMMEDIATE 'ALTER SCHEMA ' || v_target_object || ' SET COMMENT = ''Backup: ' || v_backup_name || ' | Source: ' || v_source_object || ' | Created: ' || TO_VARCHAR(CURRENT_TIMESTAMP()) || ' | Expires: ' || TO_VARCHAR(v_expires_at) || ' | Tag: ' || P_BACKUP_TAG || '''';
     END IF;
     
     -- Register in catalog
@@ -316,7 +309,7 @@ $$;
  * RBAC STORED PROCEDURE: Create Quick Backup (Simplified)
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_QUICK_BACKUP(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.BACKUP.RBAC_QUICK_BACKUP(
     P_DATABASE VARCHAR,
     P_SCHEMA VARCHAR DEFAULT NULL,
     P_TABLE VARCHAR DEFAULT NULL
@@ -329,7 +322,7 @@ $$
 DECLARE
     v_result VARIANT;
 BEGIN
-    CALL RBAC_CREATE_BACKUP(P_DATABASE, P_SCHEMA, P_TABLE, 'ADHOC', NULL, NULL, 7, NULL, 'Quick backup') INTO v_result;
+    CALL ADMIN.BACKUP.RBAC_CREATE_BACKUP(P_DATABASE, P_SCHEMA, P_TABLE, 'ADHOC', NULL, NULL, 7, NULL, 'Quick backup') INTO v_result;
     RETURN v_result;
 END;
 $$;
@@ -364,16 +357,16 @@ BEGIN
     v_policy_id := UUID_STRING();
     
     -- Determine backup type
-    IF P_SOURCE_TABLE IS NOT NULL THEN
+    IF (P_SOURCE_TABLE IS NOT NULL) THEN
         v_backup_type := 'TABLE';
-    ELSEIF P_SOURCE_SCHEMA IS NOT NULL THEN
+    ELSEIF (P_SOURCE_SCHEMA IS NOT NULL) THEN
         v_backup_type := 'SCHEMA';
     ELSE
         v_backup_type := 'DATABASE';
     END IF;
     
     -- Validate frequency
-    IF P_FREQUENCY NOT IN ('HOURLY', 'DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY') THEN
+    IF (P_FREQUENCY NOT IN ('HOURLY', 'DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY')) THEN
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Invalid frequency. Use: HOURLY, DAILY, WEEKLY, MONTHLY, YEARLY');
     END IF;
     
@@ -411,7 +404,7 @@ $$;
  * RBAC STORED PROCEDURE: Setup Backup Schedule (Creates Snowflake Task)
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_SETUP_BACKUP_SCHEDULE(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.BACKUP.RBAC_SETUP_BACKUP_SCHEDULE(
     P_POLICY_NAME VARCHAR,
     P_WAREHOUSE VARCHAR
 )
@@ -421,7 +414,7 @@ EXECUTE AS CALLER
 AS
 $$
 DECLARE
-    v_policy OBJECT;
+    v_policy VARIANT;
     v_task_name VARCHAR;
     v_schedule VARCHAR;
     v_sql VARCHAR;
@@ -440,14 +433,14 @@ BEGIN
     FROM BACKUP_POLICIES
     WHERE POLICY_NAME = P_POLICY_NAME;
     
-    IF v_policy IS NULL THEN
+    IF (v_policy IS NULL) THEN
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Policy not found: ' || P_POLICY_NAME);
     END IF;
     
     v_task_name := 'BACKUP_TASK_' || UPPER(REPLACE(P_POLICY_NAME, ' ', '_'));
     
     -- Determine schedule and tag based on frequency
-    CASE v_policy:frequency::VARCHAR
+    CASE TO_VARCHAR(v_policy:frequency)
         WHEN 'HOURLY' THEN
             v_schedule := 'USING CRON 0 * * * * UTC';
             v_backup_tag := 'HOURLY';
@@ -471,14 +464,14 @@ BEGIN
         SCHEDULE = ''' || v_schedule || '''
         AS
         CALL ADMIN.BACKUP.RBAC_CREATE_BACKUP(
-            ''' || v_policy:source_database::VARCHAR || ''',
-            ' || IFF(v_policy:source_schema IS NOT NULL, '''' || v_policy:source_schema::VARCHAR || '''', 'NULL') || ',
-            ' || IFF(v_policy:source_table IS NOT NULL, '''' || v_policy:source_table::VARCHAR || '''', 'NULL') || ',
+            ''' || TO_VARCHAR(v_policy:source_database) || ''',
+            ' || IFF(v_policy:source_schema IS NOT NULL, '''' || TO_VARCHAR(v_policy:source_schema) || '''', 'NULL') || ',
+            ' || IFF(v_policy:source_table IS NOT NULL, '''' || TO_VARCHAR(v_policy:source_table) || '''', 'NULL') || ',
             ''' || v_backup_tag || ''',
-            ' || IFF(v_policy:target_database IS NOT NULL, '''' || v_policy:target_database::VARCHAR || '''', 'NULL') || ',
+            ' || IFF(v_policy:target_database IS NOT NULL, '''' || TO_VARCHAR(v_policy:target_database) || '''', 'NULL') || ',
             NULL,
-            ' || v_policy:retention_days::VARCHAR || ',
-            ''' || v_policy:policy_id::VARCHAR || ''',
+            ' || TO_VARCHAR(v_policy:retention_days) || ',
+            ''' || TO_VARCHAR(v_policy:policy_id) || ''',
             ''Scheduled backup''
         )';
     
@@ -517,7 +510,7 @@ $$;
  * RBAC STORED PROCEDURE: Pause/Resume Backup Schedule
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_TOGGLE_BACKUP_SCHEDULE(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.BACKUP.RBAC_TOGGLE_BACKUP_SCHEDULE(
     P_POLICY_NAME VARCHAR,
     P_ACTION VARCHAR
 )
@@ -533,14 +526,14 @@ BEGIN
     FROM BACKUP_POLICIES
     WHERE POLICY_NAME = P_POLICY_NAME;
     
-    IF v_task_name IS NULL THEN
+    IF (v_task_name IS NULL) THEN
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'No schedule found for policy: ' || P_POLICY_NAME);
     END IF;
     
-    IF UPPER(P_ACTION) = 'PAUSE' THEN
+    IF (UPPER(P_ACTION) = 'PAUSE') THEN
         EXECUTE IMMEDIATE 'ALTER TASK ADMIN.BACKUP.' || v_task_name || ' SUSPEND';
         UPDATE BACKUP_POLICIES SET IS_ACTIVE = FALSE WHERE POLICY_NAME = P_POLICY_NAME;
-    ELSEIF UPPER(P_ACTION) = 'RESUME' THEN
+    ELSEIF (UPPER(P_ACTION) = 'RESUME') THEN
         EXECUTE IMMEDIATE 'ALTER TASK ADMIN.BACKUP.' || v_task_name || ' RESUME';
         UPDATE BACKUP_POLICIES SET IS_ACTIVE = TRUE WHERE POLICY_NAME = P_POLICY_NAME;
     ELSE
@@ -588,7 +581,7 @@ EXECUTE AS CALLER
 AS
 $$
 DECLARE
-    v_backup OBJECT;
+    v_backup VARIANT;
     v_restore_id VARCHAR;
     v_sql VARCHAR;
     v_target VARCHAR;
@@ -612,21 +605,21 @@ BEGIN
     FROM BACKUP_CATALOG
     WHERE BACKUP_ID = P_BACKUP_ID AND STATUS = 'ACTIVE';
     
-    IF v_backup IS NULL THEN
+    IF (v_backup IS NULL) THEN
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Backup not found or inactive: ' || P_BACKUP_ID);
     END IF;
     
     -- Build source path (the backup)
-    CASE v_backup:backup_type::VARCHAR
+    CASE v_backup:backup_type
         WHEN 'DATABASE' THEN
-            v_source := v_backup:target_database::VARCHAR;
-            v_target := COALESCE(P_TARGET_NAME, v_backup:source_database::VARCHAR || '_RESTORED');
+            v_source := v_backup:target_database;
+            v_target := COALESCE(P_TARGET_NAME, v_backup:source_database || '_RESTORED');
         WHEN 'SCHEMA' THEN
-            v_source := v_backup:target_database::VARCHAR || '.' || v_backup:target_schema::VARCHAR;
-            v_target := COALESCE(P_TARGET_NAME, v_backup:source_database::VARCHAR || '.' || v_backup:source_schema::VARCHAR || '_RESTORED');
+            v_source := v_backup:target_database || '.' || v_backup:target_schema;
+            v_target := COALESCE(P_TARGET_NAME, v_backup:source_database || '.' || v_backup:source_schema || '_RESTORED');
         WHEN 'TABLE' THEN
-            v_source := v_backup:target_database::VARCHAR || '.' || v_backup:target_schema::VARCHAR || '.' || v_backup:target_table::VARCHAR;
-            v_target := COALESCE(P_TARGET_NAME, v_backup:source_database::VARCHAR || '.' || v_backup:source_schema::VARCHAR || '.' || v_backup:source_table::VARCHAR || '_RESTORED');
+            v_source := v_backup:target_database || '.' || v_backup:target_schema || '.' || v_backup:target_table;
+            v_target := COALESCE(P_TARGET_NAME, v_backup:source_database || '.' || v_backup:source_schema || '.' || v_backup:source_table || '_RESTORED');
     END CASE;
     
     -- Record restore start
@@ -634,7 +627,7 @@ BEGIN
         RESTORE_ID, BACKUP_ID, RESTORE_TYPE, SOURCE_BACKUP, TARGET_OBJECT,
         RESTORE_METHOD, STATUS, RESTORE_REASON
     ) VALUES (
-        v_restore_id, P_BACKUP_ID, v_backup:backup_type::VARCHAR, v_source, v_target,
+        v_restore_id, P_BACKUP_ID, v_backup:backup_type, v_source, v_target,
         P_RESTORE_METHOD, 'IN_PROGRESS', P_RESTORE_REASON
     );
     
@@ -642,7 +635,7 @@ BEGIN
     CASE UPPER(P_RESTORE_METHOD)
         WHEN 'CLONE' THEN
             -- Create new object from backup
-            CASE v_backup:backup_type::VARCHAR
+            CASE v_backup:backup_type
                 WHEN 'DATABASE' THEN
                     v_sql := 'CREATE DATABASE ' || v_target || ' CLONE ' || v_source;
                 WHEN 'SCHEMA' THEN
@@ -653,8 +646,8 @@ BEGIN
             
         WHEN 'SWAP' THEN
             -- Atomic swap (only for tables and schemas in same database)
-            IF v_backup:backup_type::VARCHAR = 'TABLE' THEN
-                LET v_original VARCHAR := v_backup:source_database::VARCHAR || '.' || v_backup:source_schema::VARCHAR || '.' || v_backup:source_table::VARCHAR;
+            IF (v_backup:backup_type = 'TABLE') THEN
+                LET v_original VARCHAR := v_backup:source_database || '.' || v_backup:source_schema || '.' || v_backup:source_table;
                 v_sql := 'ALTER TABLE ' || v_original || ' SWAP WITH ' || v_source;
                 v_target := v_original;
             ELSE
@@ -663,19 +656,19 @@ BEGIN
             
         WHEN 'OVERWRITE' THEN
             -- Drop existing and clone from backup
-            CASE v_backup:backup_type::VARCHAR
+            CASE v_backup:backup_type
                 WHEN 'DATABASE' THEN
-                    LET v_orig_db VARCHAR := v_backup:source_database::VARCHAR;
+                    LET v_orig_db VARCHAR := v_backup:source_database;
                     EXECUTE IMMEDIATE 'DROP DATABASE IF EXISTS ' || v_orig_db;
                     v_sql := 'CREATE DATABASE ' || v_orig_db || ' CLONE ' || v_source;
                     v_target := v_orig_db;
                 WHEN 'SCHEMA' THEN
-                    LET v_orig_schema VARCHAR := v_backup:source_database::VARCHAR || '.' || v_backup:source_schema::VARCHAR;
+                    LET v_orig_schema VARCHAR := v_backup:source_database || '.' || v_backup:source_schema;
                     EXECUTE IMMEDIATE 'DROP SCHEMA IF EXISTS ' || v_orig_schema;
                     v_sql := 'CREATE SCHEMA ' || v_orig_schema || ' CLONE ' || v_source;
                     v_target := v_orig_schema;
                 WHEN 'TABLE' THEN
-                    LET v_orig_table VARCHAR := v_backup:source_database::VARCHAR || '.' || v_backup:source_schema::VARCHAR || '.' || v_backup:source_table::VARCHAR;
+                    LET v_orig_table VARCHAR := v_backup:source_database || '.' || v_backup:source_schema || '.' || v_backup:source_table;
                     EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || v_orig_table;
                     v_sql := 'CREATE TABLE ' || v_orig_table || ' CLONE ' || v_source;
                     v_target := v_orig_table;
@@ -704,7 +697,7 @@ BEGIN
     
     -- Audit log
     INSERT INTO BACKUP_AUDIT_LOG (ACTION, OBJECT_TYPE, OBJECT_NAME, BACKUP_ID, STATUS, DETAILS)
-    VALUES ('RESTORE', v_backup:backup_type::VARCHAR, v_target, P_BACKUP_ID, 'SUCCESS',
+    VALUES ('RESTORE', TO_VARCHAR(v_backup:backup_type), v_target, P_BACKUP_ID, 'SUCCESS',
             OBJECT_CONSTRUCT('method', P_RESTORE_METHOD, 'source', v_source, 'reason', P_RESTORE_REASON));
     
     RETURN OBJECT_CONSTRUCT(
@@ -725,7 +718,7 @@ EXCEPTION
         WHERE RESTORE_ID = v_restore_id;
         
         INSERT INTO BACKUP_AUDIT_LOG (ACTION, OBJECT_TYPE, BACKUP_ID, STATUS, ERROR_MESSAGE)
-        VALUES ('RESTORE', v_backup:backup_type::VARCHAR, P_BACKUP_ID, 'FAILED', SQLERRM);
+        VALUES ('RESTORE', v_backup:backup_type, P_BACKUP_ID, 'FAILED', SQLERRM);
         
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', SQLERRM);
 END;
@@ -735,7 +728,7 @@ $$;
  * RBAC STORED PROCEDURE: Restore Using Time Travel
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_RESTORE_TIME_TRAVEL(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.BACKUP.RBAC_RESTORE_TIME_TRAVEL(
     P_DATABASE VARCHAR,
     P_SCHEMA VARCHAR,
     P_TABLE VARCHAR,
@@ -755,8 +748,7 @@ BEGIN
     v_source := P_DATABASE || '.' || P_SCHEMA || '.' || P_TABLE;
     v_target := COALESCE(P_TARGET_NAME, v_source || '_TT_' || TO_VARCHAR(CURRENT_TIMESTAMP(), 'YYYYMMDD_HH24MISS'));
     
-    v_sql := 'CREATE TABLE ' || v_target || ' CLONE ' || v_source || 
-             ' AT (TIMESTAMP => ''' || P_RESTORE_POINT::VARCHAR || '''::TIMESTAMP_NTZ)';
+    v_sql := 'CREATE TABLE ' || v_target || ' CLONE ' || v_source || ' AT (TIMESTAMP => TO_TIMESTAMP_NTZ(''' || TO_VARCHAR(P_RESTORE_POINT) || '''))';
     
     EXECUTE IMMEDIATE v_sql;
     
@@ -797,15 +789,15 @@ $$
 DECLARE
     v_deleted INTEGER := 0;
     v_failed INTEGER := 0;
-    v_deleted_list ARRAY := ARRAY_CONSTRUCT();
-    v_failed_list ARRAY := ARRAY_CONSTRUCT();
+    v_deleted_list VARIANT := ARRAY_CONSTRUCT();
+    v_failed_list VARIANT := ARRAY_CONSTRUCT();
 BEGIN
     FOR backup_rec IN (
         SELECT BACKUP_ID, BACKUP_NAME, BACKUP_TYPE, TARGET_DATABASE, TARGET_SCHEMA, TARGET_TABLE
         FROM BACKUP_CATALOG
         WHERE STATUS = 'ACTIVE' AND EXPIRES_AT < CURRENT_TIMESTAMP()
-    ) DO
-        IF NOT P_DRY_RUN THEN
+    ) LOOP
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 -- Drop the backup object
                 CASE backup_rec.BACKUP_TYPE
@@ -831,9 +823,9 @@ BEGIN
             v_deleted := v_deleted + 1;
             v_deleted_list := ARRAY_APPEND(v_deleted_list, backup_rec.BACKUP_NAME);
         END IF;
-    END FOR;
+    END LOOP;
     
-    IF NOT P_DRY_RUN THEN
+    IF (NOT P_DRY_RUN) THEN
         INSERT INTO BACKUP_AUDIT_LOG (ACTION, OBJECT_TYPE, STATUS, DETAILS)
         VALUES ('CLEANUP_EXPIRED', 'BACKUP', 'SUCCESS',
                 OBJECT_CONSTRUCT('deleted', v_deleted, 'failed', v_failed));
@@ -869,7 +861,7 @@ EXECUTE AS CALLER
 AS
 $$
 DECLARE
-    v_backup OBJECT;
+    v_backup VARIANT;
     v_target VARCHAR;
 BEGIN
     SELECT OBJECT_CONSTRUCT(
@@ -882,20 +874,20 @@ BEGIN
     FROM BACKUP_CATALOG
     WHERE BACKUP_ID = P_BACKUP_ID AND STATUS = 'ACTIVE';
     
-    IF v_backup IS NULL THEN
+    IF (v_backup IS NULL) THEN
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Backup not found or already deleted');
     END IF;
     
     -- Drop the backup object
-    CASE v_backup:backup_type::VARCHAR
+    CASE v_backup:backup_type
         WHEN 'DATABASE' THEN
-            v_target := v_backup:target_database::VARCHAR;
+            v_target := v_backup:target_database;
             EXECUTE IMMEDIATE 'DROP DATABASE IF EXISTS ' || v_target;
         WHEN 'SCHEMA' THEN
-            v_target := v_backup:target_database::VARCHAR || '.' || v_backup:target_schema::VARCHAR;
+            v_target := v_backup:target_database || '.' || v_backup:target_schema;
             EXECUTE IMMEDIATE 'DROP SCHEMA IF EXISTS ' || v_target;
         WHEN 'TABLE' THEN
-            v_target := v_backup:target_database::VARCHAR || '.' || v_backup:target_schema::VARCHAR || '.' || v_backup:target_table::VARCHAR;
+            v_target := v_backup:target_database || '.' || v_backup:target_schema || '.' || v_backup:target_table;
             EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || v_target;
     END CASE;
     
@@ -904,7 +896,7 @@ BEGIN
     
     -- Audit log
     INSERT INTO BACKUP_AUDIT_LOG (ACTION, OBJECT_TYPE, OBJECT_NAME, BACKUP_ID, STATUS, DETAILS)
-    VALUES ('DELETE_BACKUP', v_backup:backup_type::VARCHAR, v_target, P_BACKUP_ID, 'SUCCESS',
+    VALUES ('DELETE_BACKUP', v_backup:backup_type, v_target, P_BACKUP_ID, 'SUCCESS',
             OBJECT_CONSTRUCT('reason', P_REASON));
     
     RETURN OBJECT_CONSTRUCT(
@@ -983,7 +975,7 @@ $$;
  * RBAC STORED PROCEDURE: List Backup Policies
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_LIST_BACKUP_POLICIES(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.BACKUP.RBAC_LIST_BACKUP_POLICIES(
     P_IS_ACTIVE BOOLEAN DEFAULT NULL
 )
 RETURNS TABLE (
@@ -1031,7 +1023,7 @@ $$;
  * RBAC STORED PROCEDURE: Setup Automatic Retention Cleanup
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_SETUP_RETENTION_CLEANUP(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.BACKUP.RBAC_SETUP_RETENTION_CLEANUP(
     P_WAREHOUSE VARCHAR,
     P_SCHEDULE VARCHAR DEFAULT 'DAILY'
 )
@@ -1081,22 +1073,22 @@ $$;
 -- SECTION 8: GRANT PERMISSIONS
 -- #############################################################################
 
-GRANT USAGE ON PROCEDURE RBAC_CREATE_BACKUP(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, TIMESTAMP_NTZ, INTEGER, VARCHAR, TEXT) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_QUICK_BACKUP(VARCHAR, VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_CREATE_BACKUP_POLICY(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, INTEGER, VARCHAR, BOOLEAN) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_SETUP_BACKUP_SCHEDULE(VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_TOGGLE_BACKUP_SCHEDULE(VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_RESTORE_FROM_BACKUP(VARCHAR, VARCHAR, VARCHAR, TEXT) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_RESTORE_TIME_TRAVEL(VARCHAR, VARCHAR, VARCHAR, TIMESTAMP_NTZ, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_CLEANUP_EXPIRED_BACKUPS(BOOLEAN) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_DELETE_BACKUP(VARCHAR, TEXT) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_LIST_BACKUPS(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_LIST_BACKUP_POLICIES(BOOLEAN) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_SETUP_RETENTION_CLEANUP(VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_CREATE_BACKUP(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, TIMESTAMP_NTZ, INTEGER, VARCHAR, TEXT) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_QUICK_BACKUP(VARCHAR, VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_CREATE_BACKUP_POLICY(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, INTEGER, VARCHAR, BOOLEAN) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_SETUP_BACKUP_SCHEDULE(VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_TOGGLE_BACKUP_SCHEDULE(VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_RESTORE_FROM_BACKUP(VARCHAR, VARCHAR, VARCHAR, TEXT) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_RESTORE_TIME_TRAVEL(VARCHAR, VARCHAR, VARCHAR, TIMESTAMP_NTZ, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_CLEANUP_EXPIRED_BACKUPS(BOOLEAN) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_DELETE_BACKUP(VARCHAR, TEXT) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_LIST_BACKUPS(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_LIST_BACKUP_POLICIES(BOOLEAN) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_SETUP_RETENTION_CLEANUP(VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
 
 -- DBAdmins can create and list backups
-GRANT USAGE ON PROCEDURE RBAC_CREATE_BACKUP(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, TIMESTAMP_NTZ, INTEGER, VARCHAR, TEXT) TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_QUICK_BACKUP(VARCHAR, VARCHAR, VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_LIST_BACKUPS(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_LIST_BACKUP_POLICIES(BOOLEAN) TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_RESTORE_FROM_BACKUP(VARCHAR, VARCHAR, VARCHAR, TEXT) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_CREATE_BACKUP(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, TIMESTAMP_NTZ, INTEGER, VARCHAR, TEXT) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_QUICK_BACKUP(VARCHAR, VARCHAR, VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_LIST_BACKUPS(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_LIST_BACKUP_POLICIES(BOOLEAN) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_RESTORE_FROM_BACKUP(VARCHAR, VARCHAR, VARCHAR, TEXT) TO ROLE SRS_SYSTEM_ADMIN;

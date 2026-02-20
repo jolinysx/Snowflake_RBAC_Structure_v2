@@ -41,6 +41,7 @@
  * 
  ******************************************************************************/
 
+
 -- =============================================================================
 -- DEPLOYMENT CONTEXT
 -- =============================================================================
@@ -69,7 +70,7 @@ DECLARE
     v_sql VARCHAR;
 BEGIN
     -- Validate environment
-    IF P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD') THEN
+    IF (P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid environment. Must be one of: DEV, TST, UAT, PPE, PRD'
@@ -77,7 +78,7 @@ BEGIN
     END IF;
     
     -- Validate domain name
-    IF P_DOMAIN_NAME IS NULL OR P_DOMAIN_NAME = '' THEN
+    IF (P_DOMAIN_NAME IS NULL OR P_DOMAIN_NAME = '') THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Domain name is required'
@@ -139,9 +140,10 @@ DECLARE
     v_db_role VARCHAR;
     v_is_dev BOOLEAN;
     v_sql VARCHAR;
+    v_access_role_exists BOOLEAN;
 BEGIN
     -- Validate environment
-    IF P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD') THEN
+    IF (P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid environment. Must be one of: DEV, TST, UAT, PPE, PRD'
@@ -149,7 +151,7 @@ BEGIN
     END IF;
     
     -- Validate access level
-    IF P_ACCESS_LEVEL NOT IN ('READ', 'WRITE') THEN
+    IF (P_ACCESS_LEVEL NOT IN ('READ', 'WRITE')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid access level. Must be READ or WRITE'
@@ -158,7 +160,7 @@ BEGIN
     
     -- Check if WRITE is requested for non-DEV environment
     v_is_dev := (P_ENVIRONMENT = 'DEV');
-    IF NOT v_is_dev AND P_ACCESS_LEVEL = 'WRITE' THEN
+    IF ((NOT v_is_dev) AND P_ACCESS_LEVEL = 'WRITE') THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'WRITE access is only available in DEV environment. Use READ for non-DEV.',
@@ -172,14 +174,12 @@ BEGIN
     v_db_role := 'SRD_' || v_full_db_name || '_' || P_SCHEMA_NAME || '_' || P_ACCESS_LEVEL;
     
     -- Verify access role exists
-    LET v_access_role_exists BOOLEAN := (
-        SELECT COUNT(*) > 0
-        FROM SNOWFLAKE.ACCOUNT_USAGE.ROLES
-        WHERE NAME = :v_access_role
-          AND DELETED_ON IS NULL
-    );
+    SELECT COUNT(*) > 0 INTO :v_access_role_exists
+    FROM SNOWFLAKE.ACCOUNT_USAGE.ROLES
+    WHERE NAME = :v_access_role
+      AND DELETED_ON IS NULL;
     
-    IF NOT v_access_role_exists THEN
+    IF (NOT v_access_role_exists) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Access role does not exist. Create it first using ADMIN.RBAC.RBAC_CREATE_ACCESS_ROLE.',
@@ -243,15 +243,13 @@ BEGIN
     -- VALIDATION: Check if user is a service account
     -- SRF_* and SRA_* roles can ONLY be granted to PERSON accounts
     -- =========================================================================
-    v_is_service_account := (
-        SELECT COUNT(*) > 0
-        FROM SNOWFLAKE.ACCOUNT_USAGE.USERS
-        WHERE NAME = :P_USER_NAME
-          AND DELETED_ON IS NULL
-          AND TYPE IN ('SERVICE', 'LEGACY_SERVICE')
-    );
+    SELECT COUNT(*) > 0 INTO :v_is_service_account
+    FROM SNOWFLAKE.ACCOUNT_USAGE.USERS
+    WHERE NAME = :P_USER_NAME
+      AND DELETED_ON IS NULL
+      AND TYPE IN ('SERVICE', 'LEGACY_SERVICE');
     
-    IF v_is_service_account THEN
+    IF (v_is_service_account) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'User is a service account. SRF_* and SRA_* roles can ONLY be granted to PERSON accounts.',
@@ -261,7 +259,7 @@ BEGIN
     END IF;
     
     -- Validate environment
-    IF P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD') THEN
+    IF (P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid environment. Must be one of: DEV, TST, UAT, PPE, PRD'
@@ -269,8 +267,8 @@ BEGIN
     END IF;
     
     -- Validate functional role if provided
-    IF P_FUNCTIONAL_ROLE IS NOT NULL AND 
-       P_FUNCTIONAL_ROLE NOT IN ('END_USER', 'ANALYST', 'DEVELOPER', 'TEAM_LEADER', 'DATA_SCIENTIST', 'DBADMIN') THEN
+    IF (P_FUNCTIONAL_ROLE IS NOT NULL AND 
+       P_FUNCTIONAL_ROLE NOT IN ('END_USER', 'ANALYST', 'DEVELOPER', 'TEAM_LEADER', 'DATA_SCIENTIST', 'DBADMIN')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid functional role. Must be one of: END_USER, ANALYST, DEVELOPER, TEAM_LEADER, DATA_SCIENTIST, DBADMIN'
@@ -281,7 +279,7 @@ BEGIN
     v_access_role := 'SRA_' || P_ENVIRONMENT || '_' || UPPER(P_DOMAIN_NAME) || '_ACCESS';
     
     -- Grant functional role if specified
-    IF P_FUNCTIONAL_ROLE IS NOT NULL THEN
+    IF (P_FUNCTIONAL_ROLE IS NOT NULL) THEN
         v_functional_role := 'SRF_' || P_ENVIRONMENT || '_' || P_FUNCTIONAL_ROLE;
         v_sql := 'GRANT ROLE ' || v_functional_role || ' TO USER ' || P_USER_NAME;
         EXECUTE IMMEDIATE v_sql;
@@ -341,7 +339,7 @@ DECLARE
     v_sql VARCHAR;
 BEGIN
     -- Validate environment
-    IF P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD') THEN
+    IF (P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid environment. Must be one of: DEV, TST, UAT, PPE, PRD'

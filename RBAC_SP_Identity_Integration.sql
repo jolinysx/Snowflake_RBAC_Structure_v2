@@ -78,7 +78,7 @@ DECLARE
     v_actions ARRAY := ARRAY_CONSTRUCT();
 BEGIN
     -- Validate IdP type
-    IF P_IDP_TYPE NOT IN ('OKTA', 'AZURE_AD') THEN
+    IF (P_IDP_TYPE NOT IN ('OKTA', 'AZURE_AD')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid IdP type. Must be OKTA or AZURE_AD'
@@ -86,7 +86,7 @@ BEGIN
     END IF;
     
     -- Validate provisioning mode
-    IF P_PROVISIONING_MODE NOT IN ('BASIC', 'FULL') THEN
+    IF (P_PROVISIONING_MODE NOT IN ('BASIC', 'FULL')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid provisioning mode. Must be BASIC or FULL'
@@ -113,7 +113,7 @@ BEGIN
     v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT('action', 'GRANT_CREATE_USER'));
     
     -- FULL mode additional privileges (for group-to-role mapping)
-    IF P_PROVISIONING_MODE = 'FULL' THEN
+    IF (P_PROVISIONING_MODE = 'FULL') THEN
         -- Grant CREATE ROLE for SCIM-managed roles
         v_sql := 'GRANT CREATE ROLE ON ACCOUNT TO ROLE ' || v_provisioner_role;
         EXECUTE IMMEDIATE v_sql;
@@ -203,7 +203,7 @@ DECLARE
     v_sql VARCHAR;
 BEGIN
     -- Validate IdP type
-    IF P_IDP_TYPE NOT IN ('OKTA', 'AZURE_AD') THEN
+    IF (P_IDP_TYPE NOT IN ('OKTA', 'AZURE_AD')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid IdP type. Must be OKTA or AZURE_AD'
@@ -223,7 +223,7 @@ BEGIN
         SCIM_CLIENT = ''' || IFF(P_IDP_TYPE = 'OKTA', 'OKTA', 'AZURE') || '''
         RUN_AS_ROLE = ''' || v_provisioner_role || '''';
     
-    IF P_NETWORK_POLICY IS NOT NULL THEN
+    IF (P_NETWORK_POLICY IS NOT NULL) THEN
         v_sql := v_sql || ' NETWORK_POLICY = ''' || P_NETWORK_POLICY || '''';
     END IF;
     
@@ -317,7 +317,7 @@ DECLARE
     v_ad_groups ARRAY := ARRAY_CONSTRUCT();
 BEGIN
     -- Validate IdP type
-    IF P_IDP_TYPE NOT IN ('OKTA', 'AZURE_AD') THEN
+    IF (P_IDP_TYPE NOT IN ('OKTA', 'AZURE_AD')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid IdP type. Must be OKTA or AZURE_AD'
@@ -338,7 +338,7 @@ BEGIN
         RUN_AS_ROLE = ''' || v_provisioner_role || '''
         SYNC_PASSWORD = FALSE';
     
-    IF P_NETWORK_POLICY IS NOT NULL THEN
+    IF (P_NETWORK_POLICY IS NOT NULL) THEN
         v_sql := v_sql || ' NETWORK_POLICY = ''' || P_NETWORK_POLICY || '''';
     END IF;
     
@@ -489,7 +489,7 @@ BEGIN
     v_provisioner_role := IFF(P_IDP_TYPE = 'OKTA', 'OKTA_PROVISIONER', 'AAD_PROVISIONER');
     
     -- Build environment filter
-    IF P_ENVIRONMENT IS NOT NULL THEN
+    IF (P_ENVIRONMENT IS NOT NULL) THEN
         v_env_filter := '_' || P_ENVIRONMENT || '_';
     ELSE
         v_env_filter := '_%_';
@@ -586,7 +586,7 @@ DECLARE
     v_recommendations ARRAY := ARRAY_CONSTRUCT();
 BEGIN
     -- Build environment filter
-    IF P_ENVIRONMENT IS NOT NULL THEN
+    IF (P_ENVIRONMENT IS NOT NULL) THEN
         v_env_filter := '_' || P_ENVIRONMENT || '_';
     ELSE
         v_env_filter := '_%_';
@@ -611,7 +611,7 @@ BEGIN
     
     -- Build expected AD group mappings
     FOR env IN (SELECT column1 AS env FROM VALUES ('DEV'), ('TST'), ('UAT'), ('PPE'), ('PRD')) DO
-        IF P_ENVIRONMENT IS NULL OR env.env = P_ENVIRONMENT THEN
+        IF (P_ENVIRONMENT IS NULL OR env.env = P_ENVIRONMENT) THEN
             -- Functional roles
             FOR role_level IN (SELECT column1 AS lvl FROM VALUES ('END_USER'), ('ANALYST'), ('DEVELOPER'), ('TEAM_LEADER'), ('DATA_SCIENTIST'), ('DBADMIN')) DO
                 v_expected_roles := ARRAY_APPEND(v_expected_roles, OBJECT_CONSTRUCT(
@@ -626,13 +626,13 @@ BEGIN
     
     -- Check for missing roles
     FOR i IN 0 TO ARRAY_SIZE(v_expected_roles) - 1 DO
-        IF NOT v_expected_roles[i]:exists::BOOLEAN THEN
+        IF (NOT v_expected_roles[i]:exists::BOOLEAN) THEN
             v_missing_roles := ARRAY_APPEND(v_missing_roles, v_expected_roles[i]:snowflake_role);
         END IF;
     END FOR;
     
     -- Generate recommendations
-    IF ARRAY_SIZE(v_missing_roles) > 0 THEN
+    IF (ARRAY_SIZE(v_missing_roles) > 0) THEN
         v_recommendations := ARRAY_APPEND(v_recommendations, 
             'Run RBAC_INITIAL_CONFIG() to create missing functional roles');
     END IF;
@@ -700,7 +700,7 @@ DECLARE
     v_ad_groups ARRAY := ARRAY_CONSTRUCT();
 BEGIN
     -- Build environment filter
-    IF P_ENVIRONMENT IS NOT NULL THEN
+    IF (P_ENVIRONMENT IS NOT NULL) THEN
         v_env_filter := '_' || P_ENVIRONMENT || '_';
     ELSE
         v_env_filter := '_%_';
@@ -780,8 +780,8 @@ DECLARE
     v_acs_url VARCHAR;
     v_entity_id VARCHAR;
 BEGIN
-    IF P_INTEGRATION_NAME IS NULL OR P_OKTA_ISSUER IS NULL OR 
-       P_OKTA_SSO_URL IS NULL OR P_X509_CERT IS NULL THEN
+    IF (P_INTEGRATION_NAME IS NULL OR P_OKTA_ISSUER IS NULL OR 
+       P_OKTA_SSO_URL IS NULL OR P_X509_CERT IS NULL) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'All parameters required'
@@ -841,8 +841,8 @@ DECLARE
     v_acs_url VARCHAR;
     v_entity_id VARCHAR;
 BEGIN
-    IF P_INTEGRATION_NAME IS NULL OR P_AZURE_ISSUER IS NULL OR 
-       P_AZURE_SSO_URL IS NULL OR P_X509_CERT IS NULL THEN
+    IF (P_INTEGRATION_NAME IS NULL OR P_AZURE_ISSUER IS NULL OR 
+       P_AZURE_SSO_URL IS NULL OR P_X509_CERT IS NULL) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'All parameters required'

@@ -82,7 +82,7 @@ DECLARE
     v_sql VARCHAR;
 BEGIN
     -- Validate environment
-    IF P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD') THEN
+    IF (P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid environment. Must be one of: DEV, TST, UAT, PPE, PRD'
@@ -106,7 +106,7 @@ BEGIN
         WHERE CATALOG_NAME = :v_full_db_name AND SCHEMA_NAME = :P_SCHEMA_NAME
     );
     
-    IF NOT v_schema_exists THEN
+    IF (NOT v_schema_exists) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Schema does not exist',
@@ -126,7 +126,7 @@ BEGIN
         WHERE CATALOG_NAME = :v_full_db_name AND SCHEMA_NAME = :P_SCHEMA_NAME
     );
     
-    IF NOT v_is_managed THEN
+    IF (NOT v_is_managed) THEN
         v_sql := 'ALTER SCHEMA ' || v_full_db_name || '.' || P_SCHEMA_NAME || ' ENABLE MANAGED ACCESS';
         v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT(
             'action', 'ENABLE_MANAGED_ACCESS',
@@ -134,15 +134,15 @@ BEGIN
             'status', IFF(P_DRY_RUN, 'PENDING', 'EXECUTING')
         ));
         
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 EXECUTE IMMEDIATE v_sql;
-                v_actions[ARRAY_SIZE(v_actions) - 1] := OBJECT_CONSTRUCT(
+                v_action_count := v_action_count + 1;
+                v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT(
                     'action', 'ENABLE_MANAGED_ACCESS',
                     'sql', v_sql,
                     'status', 'SUCCESS'
-                );
-                v_action_count := v_action_count + 1;
+                ));
             EXCEPTION
                 WHEN OTHER THEN
                     v_errors := ARRAY_APPEND(v_errors, OBJECT_CONSTRUCT(
@@ -164,7 +164,7 @@ BEGIN
         WHERE NAME = :v_read_db_role
     );
     
-    IF NOT v_read_role_exists THEN
+    IF (NOT v_read_role_exists) THEN
         v_sql := 'CREATE DATABASE ROLE ' || v_read_db_role || 
                  ' COMMENT = ''Database role: READ access on ' || v_full_db_name || '.' || P_SCHEMA_NAME || '''';
         v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT(
@@ -173,15 +173,15 @@ BEGIN
             'status', IFF(P_DRY_RUN, 'PENDING', 'EXECUTING')
         ));
         
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 EXECUTE IMMEDIATE v_sql;
-                v_actions[ARRAY_SIZE(v_actions) - 1] := OBJECT_CONSTRUCT(
+                v_action_count := v_action_count + 1;
+                v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT(
                     'action', 'CREATE_READ_DATABASE_ROLE',
                     'sql', v_sql,
                     'status', 'SUCCESS'
-                );
-                v_action_count := v_action_count + 1;
+                ));
             EXCEPTION
                 WHEN OTHER THEN
                     v_errors := ARRAY_APPEND(v_errors, OBJECT_CONSTRUCT(
@@ -194,14 +194,14 @@ BEGIN
     END IF;
     
     -- Check and create WRITE role (DEV only)
-    IF v_is_dev THEN
+    IF (v_is_dev) THEN
         LET v_write_role_exists BOOLEAN := (
             SELECT COUNT(*) > 0
             FROM INFORMATION_SCHEMA.DATABASE_ROLES
             WHERE NAME = :v_write_db_role
         );
         
-        IF NOT v_write_role_exists THEN
+        IF (NOT v_write_role_exists) THEN
             v_sql := 'CREATE DATABASE ROLE ' || v_write_db_role ||
                      ' COMMENT = ''Database role: WRITE access on ' || v_full_db_name || '.' || P_SCHEMA_NAME || '''';
             v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT(
@@ -210,15 +210,15 @@ BEGIN
                 'status', IFF(P_DRY_RUN, 'PENDING', 'EXECUTING')
             ));
             
-            IF NOT P_DRY_RUN THEN
+            IF (NOT P_DRY_RUN) THEN
                 BEGIN
                     EXECUTE IMMEDIATE v_sql;
-                    v_actions[ARRAY_SIZE(v_actions) - 1] := OBJECT_CONSTRUCT(
+                    v_action_count := v_action_count + 1;
+                    v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT(
                         'action', 'CREATE_WRITE_DATABASE_ROLE',
                         'sql', v_sql,
                         'status', 'SUCCESS'
-                    );
-                    v_action_count := v_action_count + 1;
+                    ));
                 EXCEPTION
                     WHEN OTHER THEN
                         v_errors := ARRAY_APPEND(v_errors, OBJECT_CONSTRUCT(
@@ -259,7 +259,7 @@ BEGIN
     
     FOR i IN 0 TO ARRAY_SIZE(v_read_privileges) - 1 DO
         v_sql := v_read_privileges[i];
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 EXECUTE IMMEDIATE v_sql;
             EXCEPTION
@@ -276,7 +276,7 @@ BEGIN
     ));
     
     -- WRITE privileges (DEV only)
-    IF v_is_dev THEN
+    IF (v_is_dev) THEN
         LET v_write_privileges ARRAY := ARRAY_CONSTRUCT(
             'GRANT USAGE ON SCHEMA ' || P_SCHEMA_NAME || ' TO DATABASE ROLE ' || v_write_db_role,
             'GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA ' || P_SCHEMA_NAME || ' TO DATABASE ROLE ' || v_write_db_role,
@@ -289,7 +289,7 @@ BEGIN
         
         FOR i IN 0 TO ARRAY_SIZE(v_write_privileges) - 1 DO
             v_sql := v_write_privileges[i];
-            IF NOT P_DRY_RUN THEN
+            IF (NOT P_DRY_RUN) THEN
                 BEGIN
                     EXECUTE IMMEDIATE v_sql;
                 EXCEPTION
@@ -334,7 +334,7 @@ BEGIN
         v_sql := 'GRANT OWNERSHIP ON ALL ' || v_obj_type || ' IN SCHEMA ' || v_full_db_name || '.' || P_SCHEMA_NAME ||
                  ' TO ROLE ' || v_object_owner_role || ' COPY CURRENT GRANTS';
         
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 EXECUTE IMMEDIATE v_sql;
             EXCEPTION
@@ -364,7 +364,7 @@ BEGIN
         v_sql := 'GRANT OWNERSHIP ON FUTURE ' || v_future_type || ' IN SCHEMA ' || v_full_db_name || '.' || P_SCHEMA_NAME ||
                  ' TO ROLE ' || v_object_owner_role;
         
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 EXECUTE IMMEDIATE v_sql;
             EXCEPTION
@@ -401,7 +401,7 @@ BEGIN
     
     FOR i IN 0 TO ARRAY_SIZE(v_create_privileges) - 1 DO
         v_sql := v_create_privileges[i];
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 EXECUTE IMMEDIATE v_sql;
             EXCEPTION
@@ -421,9 +421,9 @@ BEGIN
     -- =========================================================================
     -- RECTIFICATION 8: Non-DEV specific - Grant USAGE to SRS_DEVOPS
     -- =========================================================================
-    IF NOT v_is_dev THEN
+    IF (NOT v_is_dev) THEN
         v_sql := 'GRANT USAGE ON DATABASE ' || v_full_db_name || ' TO ROLE ' || v_devops_role;
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 EXECUTE IMMEDIATE v_sql;
             EXCEPTION
@@ -432,7 +432,7 @@ BEGIN
         END IF;
         
         v_sql := 'GRANT USAGE ON SCHEMA ' || v_full_db_name || '.' || P_SCHEMA_NAME || ' TO ROLE ' || v_devops_role;
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 EXECUTE IMMEDIATE v_sql;
             EXCEPTION

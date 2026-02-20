@@ -158,7 +158,7 @@ BEGIN
     v_first_env := v_environments[0]::VARCHAR;
     
     -- Create service role for the first environment
-    CALL RBAC_CREATE_SERVICE_ROLE(
+    CALL ADMIN.RBAC.RBAC_CREATE_SERVICE_ROLE(
         v_first_env,
         P_DOMAIN,
         P_CAPABILITY,
@@ -166,7 +166,7 @@ BEGIN
     );
     
     -- Create the service account
-    CALL RBAC_CREATE_SERVICE_ACCOUNT(
+    CALL ADMIN.RBAC.RBAC_CREATE_SERVICE_ACCOUNT(
         v_service_account_name,
         P_RSA_PUBLIC_KEY,
         v_first_env,
@@ -182,7 +182,7 @@ BEGIN
         LET v_env VARCHAR := v_environments[i]::VARCHAR;
         
         BEGIN
-            CALL RBAC_GRANT_SERVICE_ACCOUNT(
+            CALL ADMIN.RBAC.RBAC_GRANT_SERVICE_ACCOUNT(
                 v_service_account_name,
                 v_env,
                 P_DOMAIN,
@@ -251,7 +251,7 @@ $$
 DECLARE
     v_result VARIANT;
 BEGIN
-    CALL DEVOPS_CREATE_PIPELINE_SERVICE_ACCOUNT(
+    CALL ADMIN.DEVOPS.DEVOPS_CREATE_PIPELINE_SERVICE_ACCOUNT(
         'AZURE_DEVOPS_' || P_PROJECT_NAME,
         P_DOMAIN,
         P_RSA_PUBLIC_KEY,
@@ -322,7 +322,7 @@ $$
 DECLARE
     v_result VARIANT;
 BEGIN
-    CALL DEVOPS_CREATE_PIPELINE_SERVICE_ACCOUNT(
+    CALL ADMIN.DEVOPS.DEVOPS_CREATE_PIPELINE_SERVICE_ACCOUNT(
         'GITHUB_' || REPLACE(P_REPO_NAME, '-', '_'),
         P_DOMAIN,
         P_RSA_PUBLIC_KEY,
@@ -404,7 +404,7 @@ $$
 DECLARE
     v_result VARIANT;
 BEGIN
-    CALL DEVOPS_CREATE_PIPELINE_SERVICE_ACCOUNT(
+    CALL ADMIN.DEVOPS.DEVOPS_CREATE_PIPELINE_SERVICE_ACCOUNT(
         'GITLAB_' || REPLACE(P_PROJECT_NAME, '-', '_'),
         P_DOMAIN,
         P_RSA_PUBLIC_KEY,
@@ -495,19 +495,19 @@ BEGIN
     v_api_integration := COALESCE(P_API_INTEGRATION_NAME, 'GIT_API_' || UPPER(P_GIT_PROVIDER));
     
     -- Create API integration for Git provider (if not exists)
-    IF P_GIT_PROVIDER = 'GITHUB' THEN
+    IF (P_GIT_PROVIDER = 'GITHUB') THEN
         v_sql := 'CREATE API INTEGRATION IF NOT EXISTS ' || v_api_integration || '
             API_PROVIDER = GIT_HTTPS_API
             API_ALLOWED_PREFIXES = (''https://github.com'')
             ALLOWED_AUTHENTICATION_SECRETS = (' || P_SECRET_NAME || ')
             ENABLED = TRUE';
-    ELSEIF P_GIT_PROVIDER = 'GITLAB' THEN
+    ELSEIF (P_GIT_PROVIDER = 'GITLAB') THEN
         v_sql := 'CREATE API INTEGRATION IF NOT EXISTS ' || v_api_integration || '
             API_PROVIDER = GIT_HTTPS_API
             API_ALLOWED_PREFIXES = (''https://gitlab.com'')
             ALLOWED_AUTHENTICATION_SECRETS = (' || P_SECRET_NAME || ')
             ENABLED = TRUE';
-    ELSEIF P_GIT_PROVIDER = 'AZURE_DEVOPS' THEN
+    ELSEIF (P_GIT_PROVIDER = 'AZURE_DEVOPS') THEN
         v_sql := 'CREATE API INTEGRATION IF NOT EXISTS ' || v_api_integration || '
             API_PROVIDER = GIT_HTTPS_API
             API_ALLOWED_PREFIXES = (''https://dev.azure.com'')
@@ -755,7 +755,7 @@ DECLARE
     v_file_location VARCHAR;
 BEGIN
     -- Start deployment
-    CALL DEVOPS_START_DEPLOYMENT(
+    CALL ADMIN.DEVOPS.DEVOPS_START_DEPLOYMENT(
         P_TARGET_ENVIRONMENT,
         P_DATABASE_NAME,
         P_SCHEMA_NAME,
@@ -774,9 +774,11 @@ BEGIN
     
     -- Execute the SQL file
     BEGIN
-        EXECUTE IMMEDIATE FROM :v_file_location;
+        -- Use dynamic SQL to execute from the file location
+        LET v_exec_sql VARCHAR := 'EXECUTE IMMEDIATE FROM ' || v_file_location;
+        EXECUTE IMMEDIATE v_exec_sql;
         
-        CALL DEVOPS_COMPLETE_DEPLOYMENT(v_deployment_id, 'SUCCESS', NULL);
+        CALL ADMIN.DEVOPS.DEVOPS_COMPLETE_DEPLOYMENT(v_deployment_id, 'SUCCESS', NULL);
         
         RETURN OBJECT_CONSTRUCT(
             'status', 'SUCCESS',
@@ -788,7 +790,7 @@ BEGIN
         );
     EXCEPTION
         WHEN OTHER THEN
-            CALL DEVOPS_COMPLETE_DEPLOYMENT(v_deployment_id, 'FAILED', SQLERRM);
+            CALL ADMIN.DEVOPS.DEVOPS_COMPLETE_DEPLOYMENT(v_deployment_id, 'FAILED', SQLERRM);
             RETURN OBJECT_CONSTRUCT(
                 'status', 'ERROR',
                 'deployment_id', v_deployment_id,
@@ -834,14 +836,14 @@ DECLARE
     v_sql VARCHAR;
 BEGIN
     -- Validate promotion path
-    IF NOT (
+    IF (NOT (
         (P_SOURCE_ENVIRONMENT = 'DEV' AND P_TARGET_ENVIRONMENT = 'TST') OR
         (P_SOURCE_ENVIRONMENT = 'TST' AND P_TARGET_ENVIRONMENT = 'UAT') OR
         (P_SOURCE_ENVIRONMENT = 'UAT' AND P_TARGET_ENVIRONMENT = 'PPE') OR
         (P_SOURCE_ENVIRONMENT = 'PPE' AND P_TARGET_ENVIRONMENT = 'PRD') OR
         (P_SOURCE_ENVIRONMENT = 'DEV' AND P_TARGET_ENVIRONMENT = 'UAT') OR
         (P_SOURCE_ENVIRONMENT = 'UAT' AND P_TARGET_ENVIRONMENT = 'PRD')
-    ) THEN
+    )) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid promotion path. Valid: DEV→TST→UAT→PPE→PRD'
@@ -853,8 +855,8 @@ BEGIN
     v_object_types := COALESCE(P_OBJECT_TYPES, ARRAY_CONSTRUCT('TABLE', 'VIEW', 'PROCEDURE', 'FUNCTION', 'STREAM', 'TASK'));
     
     -- Start deployment tracking
-    IF NOT P_DRY_RUN THEN
-        CALL DEVOPS_START_DEPLOYMENT(
+    IF (NOT P_DRY_RUN) THEN
+        CALL ADMIN.DEVOPS.DEVOPS_START_DEPLOYMENT(
             P_TARGET_ENVIRONMENT,
             P_DATABASE_NAME,
             P_SCHEMA_NAME,
@@ -931,7 +933,7 @@ BEGIN
     v_target_schema := P_DATABASE_NAME || '_' || P_TARGET_ENVIRONMENT || '.' || P_SCHEMA_NAME;
     
     -- Start deployment
-    CALL DEVOPS_START_DEPLOYMENT(
+    CALL ADMIN.DEVOPS.DEVOPS_START_DEPLOYMENT(
         P_TARGET_ENVIRONMENT,
         P_DATABASE_NAME,
         P_SCHEMA_NAME,
@@ -948,7 +950,7 @@ BEGIN
     v_deployment_id := v_result:deployment_id::VARCHAR;
     
     -- Clone the schema
-    IF P_INCLUDE_DATA THEN
+    IF (P_INCLUDE_DATA) THEN
         v_sql := 'CREATE OR REPLACE SCHEMA ' || v_target_schema || ' CLONE ' || v_source_schema;
     ELSE
         v_sql := 'CREATE OR REPLACE SCHEMA ' || v_target_schema || ' CLONE ' || v_source_schema || ' COPY GRANTS';
@@ -956,7 +958,7 @@ BEGIN
     
     BEGIN
         EXECUTE IMMEDIATE v_sql;
-        CALL DEVOPS_COMPLETE_DEPLOYMENT(v_deployment_id, 'SUCCESS', NULL);
+        CALL ADMIN.DEVOPS.DEVOPS_COMPLETE_DEPLOYMENT(v_deployment_id, 'SUCCESS', NULL);
         
         RETURN OBJECT_CONSTRUCT(
             'status', 'SUCCESS',
@@ -968,7 +970,7 @@ BEGIN
         );
     EXCEPTION
         WHEN OTHER THEN
-            CALL DEVOPS_COMPLETE_DEPLOYMENT(v_deployment_id, 'FAILED', SQLERRM);
+            CALL ADMIN.DEVOPS.DEVOPS_COMPLETE_DEPLOYMENT(v_deployment_id, 'FAILED', SQLERRM);
             RETURN OBJECT_CONSTRUCT(
                 'status', 'ERROR',
                 'deployment_id', v_deployment_id,
@@ -1003,7 +1005,7 @@ EXECUTE AS CALLER
 AS
 $$
 DECLARE
-    v_deployment OBJECT;
+    v_deployment VARIANT;
     v_rollback_id VARCHAR;
     v_target_time TIMESTAMP_NTZ;
 BEGIN
@@ -1012,7 +1014,7 @@ BEGIN
     FROM DEVOPS_DEPLOYMENTS
     WHERE DEPLOYMENT_ID = P_DEPLOYMENT_ID;
     
-    IF v_deployment IS NULL THEN
+    IF (v_deployment IS NULL) THEN
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Deployment not found');
     END IF;
     

@@ -207,7 +207,7 @@ DECLARE
     v_trigger_clause VARCHAR := '';
 BEGIN
     -- Validate frequency
-    IF P_FREQUENCY NOT IN ('MONTHLY', 'WEEKLY', 'DAILY', 'YEARLY', 'NEVER') THEN
+    IF (P_FREQUENCY NOT IN ('MONTHLY', 'WEEKLY', 'DAILY', 'YEARLY', 'NEVER')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid frequency. Must be: MONTHLY, WEEKLY, DAILY, YEARLY, or NEVER'
@@ -215,10 +215,10 @@ BEGIN
     END IF;
     
     -- Build notify users list
-    IF P_NOTIFY_USERS IS NOT NULL AND ARRAY_SIZE(P_NOTIFY_USERS) > 0 THEN
+    IF (P_NOTIFY_USERS IS NOT NULL AND ARRAY_SIZE(P_NOTIFY_USERS) > 0) THEN
         v_notify_list := ' NOTIFY_USERS = (';
         FOR i IN 0 TO ARRAY_SIZE(P_NOTIFY_USERS) - 1 DO
-            IF i > 0 THEN
+            IF (i > 0) THEN
                 v_notify_list := v_notify_list || ', ';
             END IF;
             v_notify_list := v_notify_list || P_NOTIFY_USERS[i];
@@ -227,26 +227,26 @@ BEGIN
     END IF;
     
     -- Build trigger clauses
-    IF P_NOTIFY_TRIGGERS IS NOT NULL THEN
+    IF (P_NOTIFY_TRIGGERS IS NOT NULL) THEN
         FOR i IN 0 TO ARRAY_SIZE(P_NOTIFY_TRIGGERS) - 1 DO
             v_trigger_clause := v_trigger_clause || ' TRIGGERS ON ' || P_NOTIFY_TRIGGERS[i]::VARCHAR || ' PERCENT DO NOTIFY';
         END FOR;
     END IF;
     
-    IF P_SUSPEND_TRIGGERS IS NOT NULL THEN
+    IF (P_SUSPEND_TRIGGERS IS NOT NULL) THEN
         FOR i IN 0 TO ARRAY_SIZE(P_SUSPEND_TRIGGERS) - 1 DO
             v_trigger_clause := v_trigger_clause || ' TRIGGERS ON ' || P_SUSPEND_TRIGGERS[i]::VARCHAR || ' PERCENT DO SUSPEND';
         END FOR;
     END IF;
     
-    IF P_SUSPEND_IMMEDIATE_TRIGGERS IS NOT NULL THEN
+    IF (P_SUSPEND_IMMEDIATE_TRIGGERS IS NOT NULL) THEN
         FOR i IN 0 TO ARRAY_SIZE(P_SUSPEND_IMMEDIATE_TRIGGERS) - 1 DO
             v_trigger_clause := v_trigger_clause || ' TRIGGERS ON ' || P_SUSPEND_IMMEDIATE_TRIGGERS[i]::VARCHAR || ' PERCENT DO SUSPEND_IMMEDIATE';
         END FOR;
     END IF;
     
     -- Default triggers if none specified
-    IF v_trigger_clause = '' THEN
+    IF (v_trigger_clause = '') THEN
         v_trigger_clause := ' TRIGGERS ON 75 PERCENT DO NOTIFY ON 90 PERCENT DO NOTIFY ON 100 PERCENT DO SUSPEND';
     END IF;
     
@@ -255,13 +255,13 @@ BEGIN
              ' WITH CREDIT_QUOTA = ' || P_CREDIT_QUOTA ||
              ' FREQUENCY = ' || P_FREQUENCY;
     
-    IF P_START_TIMESTAMP IS NOT NULL THEN
+    IF (P_START_TIMESTAMP IS NOT NULL) THEN
         v_sql := v_sql || ' START_TIMESTAMP = ''' || P_START_TIMESTAMP || '''';
     ELSE
         v_sql := v_sql || ' START_TIMESTAMP = IMMEDIATELY';
     END IF;
     
-    IF P_END_TIMESTAMP IS NOT NULL THEN
+    IF (P_END_TIMESTAMP IS NOT NULL) THEN
         v_sql := v_sql || ' END_TIMESTAMP = ''' || P_END_TIMESTAMP || '''';
     END IF;
     
@@ -315,7 +315,7 @@ DECLARE
     v_warehouse VARCHAR;
 BEGIN
     -- Optionally set as account-level monitor
-    IF P_SET_AS_ACCOUNT_MONITOR THEN
+    IF (P_SET_AS_ACCOUNT_MONITOR) THEN
         v_sql := 'ALTER ACCOUNT SET RESOURCE_MONITOR = ' || P_MONITOR_NAME;
         EXECUTE IMMEDIATE v_sql;
         v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT(
@@ -325,7 +325,7 @@ BEGIN
     END IF;
     
     -- Assign to each warehouse
-    IF P_WAREHOUSES IS NOT NULL THEN
+    IF (P_WAREHOUSES IS NOT NULL) THEN
         FOR i IN 0 TO ARRAY_SIZE(P_WAREHOUSES) - 1 DO
             v_warehouse := P_WAREHOUSES[i]::VARCHAR;
             v_sql := 'ALTER WAREHOUSE ' || v_warehouse || ' SET RESOURCE_MONITOR = ' || P_MONITOR_NAME;
@@ -466,7 +466,7 @@ BEGIN
         EXECUTE IMMEDIATE v_sql;
         
         -- Enable email notifications if requested
-        IF P_EMAIL_NOTIFICATIONS THEN
+        IF (P_EMAIL_NOTIFICATIONS) THEN
             v_sql := 'CALL SNOWFLAKE.CORE.BUDGET!' || P_BUDGET_NAME || '!SET_EMAIL_NOTIFICATIONS(TRUE)';
             EXECUTE IMMEDIATE v_sql;
         END IF;
@@ -484,7 +484,7 @@ BEGIN
     EXCEPTION
         WHEN OTHER THEN
             -- Check if it's an edition limitation
-            IF SQLERRM LIKE '%BUDGET%not%supported%' OR SQLERRM LIKE '%Enterprise%' THEN
+            IF (SQLERRM LIKE '%BUDGET%not%supported%' OR SQLERRM LIKE '%Enterprise%') THEN
                 RETURN OBJECT_CONSTRUCT(
                     'status', 'ERROR',
                     'message', 'Snowflake Budgets require Enterprise Edition or higher. Use Resource Monitors instead.',
@@ -641,7 +641,7 @@ BEGIN
     WHERE COST_CENTER_CODE = UPPER(P_COST_CENTER_CODE)
       AND IS_ACTIVE = TRUE;
     
-    IF v_cost_center_id IS NULL THEN
+    IF (v_cost_center_id IS NULL) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Cost center not found: ' || P_COST_CENTER_CODE
@@ -1210,10 +1210,10 @@ AS
 $$
 BEGIN
     -- Get individual dashboards
-    LET v_cost_overview VARIANT := (CALL RBAC_COST_DASHBOARD(30));
-    LET v_warehouse_costs VARIANT := (CALL RBAC_WAREHOUSE_COST_DASHBOARD(NULL, 30));
-    LET v_anomalies VARIANT := (CALL RBAC_COST_ANOMALY_DASHBOARD(30, 50));
-    LET v_chargeback VARIANT := (CALL RBAC_CHARGEBACK_REPORT(NULL, NULL));
+    CALL ADMIN.RBAC.RBAC_COST_DASHBOARD(30) INTO v_cost_overview;
+    CALL ADMIN.RBAC.RBAC_WAREHOUSE_COST_DASHBOARD(NULL, 30) INTO v_warehouse_costs;
+    CALL ADMIN.RBAC.RBAC_COST_ANOMALY_DASHBOARD(30, 50) INTO v_anomalies;
+    CALL ADMIN.RBAC.RBAC_CHARGEBACK_REPORT(NULL, NULL) INTO v_chargeback;
     
     RETURN OBJECT_CONSTRUCT(
         'dashboard', 'UNIFIED_COST_MONITORING',
@@ -1269,14 +1269,14 @@ DECLARE
     v_default_quota NUMBER;
 BEGIN
     -- Build warehouse name
-    IF P_WAREHOUSE_SUFFIX IS NOT NULL AND P_WAREHOUSE_SUFFIX != '' THEN
+    IF (P_WAREHOUSE_SUFFIX IS NOT NULL AND P_WAREHOUSE_SUFFIX != '') THEN
         v_warehouse_name := P_ENVIRONMENT || '_' || P_WAREHOUSE_SUFFIX || '_WH';
     ELSE
         v_warehouse_name := P_ENVIRONMENT || '_WH';
     END IF;
     
     -- Set default quota based on environment if not specified
-    IF P_CREDIT_QUOTA IS NULL THEN
+    IF (P_CREDIT_QUOTA IS NULL) THEN
         v_default_quota := CASE P_ENVIRONMENT
             WHEN 'DEV' THEN 100
             WHEN 'TST' THEN 50
@@ -1290,22 +1290,22 @@ BEGIN
     END IF;
     
     -- Create the warehouse
-    v_create_result := (CALL RBAC_CREATE_WAREHOUSE(
+    CALL ADMIN.RBAC.RBAC_CREATE_WAREHOUSE(
         P_ENVIRONMENT,
         P_WAREHOUSE_SIZE,
         P_AUTO_SUSPEND,
         P_WAREHOUSE_SUFFIX
-    ));
+    ) INTO v_create_result;
     
-    IF v_create_result:status != 'SUCCESS' THEN
+    IF (v_create_result:status != 'SUCCESS') THEN
         RETURN v_create_result;
     END IF;
     
     -- Create resource monitor if requested
-    IF P_CREATE_RESOURCE_MONITOR THEN
+    IF (P_CREATE_RESOURCE_MONITOR) THEN
         v_monitor_name := v_warehouse_name || '_MONITOR';
         
-        v_monitor_result := (CALL RBAC_CREATE_RESOURCE_MONITOR(
+        CALL ADMIN.RBAC.RBAC_CREATE_RESOURCE_MONITOR(
             v_monitor_name,
             v_default_quota,
             'MONTHLY',
@@ -1315,25 +1315,25 @@ BEGIN
             COALESCE(P_NOTIFY_TRIGGERS, ARRAY_CONSTRUCT(75, 90)),
             COALESCE(P_SUSPEND_TRIGGERS, ARRAY_CONSTRUCT(100)),
             NULL
-        ));
+        ) INTO v_monitor_result;
         
-        IF v_monitor_result:status = 'SUCCESS' THEN
+        IF (v_monitor_result:status = 'SUCCESS') THEN
             -- Assign monitor to warehouse
-            v_assign_result := (CALL RBAC_ASSIGN_RESOURCE_MONITOR(
+            CALL ADMIN.RBAC.RBAC_ASSIGN_RESOURCE_MONITOR(
                 v_monitor_name,
                 ARRAY_CONSTRUCT(v_warehouse_name),
                 FALSE
-            ));
+            ) INTO v_assign_result;
         END IF;
     END IF;
     
     -- Tag to cost center if specified
-    IF P_COST_CENTER_CODE IS NOT NULL THEN
-        v_tag_result := (CALL RBAC_TAG_WAREHOUSE_COST_CENTER(
+    IF (P_COST_CENTER_CODE IS NOT NULL) THEN
+        CALL ADMIN.RBAC.RBAC_TAG_WAREHOUSE_COST_CENTER(
             v_warehouse_name,
             P_COST_CENTER_CODE,
             100
-        ));
+        ) INTO v_tag_result;
     END IF;
     
     RETURN OBJECT_CONSTRUCT(

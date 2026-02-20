@@ -49,7 +49,7 @@ DECLARE
     v_healthy_groups INTEGER;
     v_warning_groups INTEGER;
     v_critical_groups INTEGER;
-    v_groups_detail ARRAY;
+    v_groups_detail VARIANT;
     v_replication_lag_avg INTEGER;
 BEGIN
     -- Count by health status
@@ -84,12 +84,11 @@ BEGIN
             ELSE 'CRITICAL'
         END,
         'databases', INCLUDED_DATABASES
-    )) INTO v_groups_detail
-    FROM HADR_REPLICATION_GROUPS
-    WHERE STATUS = 'ACTIVE'
-    ORDER BY 
+    )) WITHIN GROUP (ORDER BY 
         CASE WHEN DATEDIFF(MINUTE, COALESCE(LAST_REFRESH_AT, CREATED_AT), CURRENT_TIMESTAMP()) > RPO_TARGET_MINUTES THEN 0 ELSE 1 END,
-        GROUP_NAME;
+        GROUP_NAME) INTO v_groups_detail
+    FROM HADR_REPLICATION_GROUPS
+    WHERE STATUS = 'ACTIVE';
     
     RETURN OBJECT_CONSTRUCT(
         'dashboard', 'REPLICATION_HEALTH',
@@ -126,10 +125,10 @@ EXECUTE AS CALLER
 AS
 $$
 DECLARE
-    v_failover_groups ARRAY;
-    v_readiness_checks ARRAY := ARRAY_CONSTRUCT();
+    v_failover_groups VARIANT;
+    v_readiness_checks VARIANT := ARRAY_CONSTRUCT();
     v_overall_ready BOOLEAN := TRUE;
-    v_last_test_results ARRAY;
+    v_last_test_results VARIANT;
 BEGIN
     -- Get failover group status
     SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
@@ -150,11 +149,11 @@ BEGIN
     LEFT JOIN HADR_REPLICATION_GROUPS r ON f.REPLICATION_GROUP_ID = r.GROUP_ID;
     
     -- Check if all groups are ready
-    FOR i IN 0 TO ARRAY_SIZE(COALESCE(v_failover_groups, ARRAY_CONSTRUCT())) - 1 DO
-        IF NOT v_failover_groups[i]:failover_ready::BOOLEAN THEN
+    FOR i IN 0 TO ARRAY_SIZE(COALESCE(v_failover_groups, ARRAY_CONSTRUCT())) - 1 LOOP
+        IF (NOT v_failover_groups[i]:failover_ready::BOOLEAN) THEN
             v_overall_ready := FALSE;
         END IF;
-    END FOR;
+    END LOOP;
     
     -- Readiness checks
     -- Check 1: Active replication groups
@@ -233,16 +232,16 @@ $$;
  * RBAC STORED PROCEDURE: RTO/RPO Compliance Dashboard
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_RTORPO_COMPLIANCE_DASHBOARD()
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.HADR.RBAC_RTORPO_COMPLIANCE_DASHBOARD()
 RETURNS VARIANT
 LANGUAGE SQL
 EXECUTE AS CALLER
 AS
 $$
 DECLARE
-    v_rpo_compliance ARRAY;
-    v_rto_from_tests ARRAY;
-    v_compliance_history ARRAY;
+    v_rpo_compliance VARIANT;
+    v_rto_from_tests VARIANT;
+    v_compliance_history VARIANT;
     v_overall_rpo_compliant BOOLEAN := TRUE;
     v_overall_rto_compliant BOOLEAN := TRUE;
 BEGIN
@@ -258,11 +257,11 @@ BEGIN
     WHERE STATUS = 'ACTIVE';
     
     -- Check RPO compliance
-    FOR i IN 0 TO ARRAY_SIZE(COALESCE(v_rpo_compliance, ARRAY_CONSTRUCT())) - 1 DO
-        IF NOT v_rpo_compliance[i]:rpo_compliant::BOOLEAN THEN
+    FOR i IN 0 TO ARRAY_SIZE(COALESCE(v_rpo_compliance, ARRAY_CONSTRUCT())) - 1 LOOP
+        IF (NOT v_rpo_compliance[i]:rpo_compliant::BOOLEAN) THEN
             v_overall_rpo_compliant := FALSE;
         END IF;
-    END FOR;
+    END LOOP;
     
     -- RTO from actual DR tests
     SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
@@ -279,11 +278,11 @@ BEGIN
     LIMIT 10;
     
     -- Check RTO compliance from tests
-    FOR i IN 0 TO ARRAY_SIZE(COALESCE(v_rto_from_tests, ARRAY_CONSTRUCT())) - 1 DO
-        IF NOT v_rto_from_tests[i]:rto_compliant::BOOLEAN THEN
+    FOR i IN 0 TO ARRAY_SIZE(COALESCE(v_rto_from_tests, ARRAY_CONSTRUCT())) - 1 LOOP
+        IF (NOT v_rto_from_tests[i]:rto_compliant::BOOLEAN) THEN
             v_overall_rto_compliant := FALSE;
         END IF;
-    END FOR;
+    END LOOP;
     
     -- Historical compliance (last 30 days replication history)
     SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
@@ -294,7 +293,7 @@ BEGIN
     )) INTO v_compliance_history
     FROM (
         SELECT 
-            STARTED_AT::DATE AS HISTORY_DATE,
+            TO_DATE(STARTED_AT) AS HISTORY_DATE,
             AVG(REPLICATION_LAG_SECONDS / 60) AS AVG_LAG,
             MAX(REPLICATION_LAG_SECONDS / 60) AS MAX_LAG,
             COUNT(*) AS REFRESH_COUNT
@@ -336,7 +335,7 @@ $$;
  * RBAC STORED PROCEDURE: Failover Events Dashboard
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_FAILOVER_EVENTS_DASHBOARD(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.HADR.RBAC_FAILOVER_EVENTS_DASHBOARD(
     P_DAYS INTEGER DEFAULT 90
 )
 RETURNS VARIANT
@@ -345,7 +344,7 @@ EXECUTE AS CALLER
 AS
 $$
 DECLARE
-    v_events ARRAY;
+    v_events VARIANT;
     v_by_type VARIANT;
     v_by_reason VARIANT;
     v_avg_duration INTEGER;
@@ -420,7 +419,7 @@ $$;
  * RBAC STORED PROCEDURE: DR Test Results Dashboard
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_DR_TEST_RESULTS_DASHBOARD()
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.HADR.RBAC_DR_TEST_RESULTS_DASHBOARD()
 RETURNS VARIANT
 LANGUAGE SQL
 EXECUTE AS CALLER
@@ -430,8 +429,8 @@ DECLARE
     v_summary VARIANT;
     v_by_type VARIANT;
     v_pass_rate FLOAT;
-    v_recent_tests ARRAY;
-    v_trends ARRAY;
+    v_recent_tests VARIANT;
+    v_trends VARIANT;
 BEGIN
     -- Summary stats
     SELECT OBJECT_CONSTRUCT(
@@ -445,7 +444,7 @@ BEGIN
     FROM HADR_DR_TESTS;
     
     -- Pass rate
-    SELECT (COUNT_IF(PASSED = TRUE) * 100.0 / NULLIF(COUNT(*), 0))::FLOAT
+    SELECT TRY_TO_DOUBLE((COUNT_IF(PASSED = TRUE) * 100.0 / NULLIF(COUNT(*), 0)))
     INTO v_pass_rate
     FROM HADR_DR_TESTS
     WHERE STATUS = 'COMPLETED';
@@ -456,7 +455,7 @@ BEGIN
         SELECT TEST_TYPE, OBJECT_CONSTRUCT(
             'total', COUNT(*),
             'passed', COUNT_IF(PASSED = TRUE),
-            'pass_rate', (COUNT_IF(PASSED = TRUE) * 100.0 / NULLIF(COUNT(*), 0))::FLOAT
+            'pass_rate', TRY_TO_DOUBLE((COUNT_IF(PASSED = TRUE) * 100.0 / NULLIF(COUNT(*), 0)))
         ) AS STATS
         FROM HADR_DR_TESTS
         WHERE STATUS = 'COMPLETED'
@@ -486,7 +485,7 @@ BEGIN
         'month', TEST_MONTH,
         'tests_run', CNT,
         'passed', PASS_CNT,
-        'pass_rate', (PASS_CNT * 100.0 / NULLIF(CNT, 0))::FLOAT
+        'pass_rate', TRY_TO_DOUBLE((PASS_CNT * 100.0 / NULLIF(CNT, 0)))
     )) INTO v_trends
     FROM (
         SELECT 
@@ -537,37 +536,37 @@ DECLARE
     v_rtorpo VARIANT;
     v_dr_tests VARIANT;
     v_overall_health VARCHAR;
-    v_alerts ARRAY := ARRAY_CONSTRUCT();
+    v_alerts VARIANT := ARRAY_CONSTRUCT();
 BEGIN
     -- Gather all dashboards
-    CALL RBAC_REPLICATION_HEALTH_DASHBOARD() INTO v_replication;
-    CALL RBAC_FAILOVER_READINESS_DASHBOARD() INTO v_failover_readiness;
-    CALL RBAC_RTORPO_COMPLIANCE_DASHBOARD() INTO v_rtorpo;
-    CALL RBAC_DR_TEST_RESULTS_DASHBOARD() INTO v_dr_tests;
+    CALL ADMIN.HADR.RBAC_REPLICATION_HEALTH_DASHBOARD() INTO v_replication;
+    CALL ADMIN.HADR.RBAC_FAILOVER_READINESS_DASHBOARD() INTO v_failover_readiness;
+    CALL ADMIN.HADR.RBAC_RTORPO_COMPLIANCE_DASHBOARD() INTO v_rtorpo;
+    CALL ADMIN.HADR.RBAC_DR_TEST_RESULTS_DASHBOARD() INTO v_dr_tests;
     
     -- Determine overall health
-    IF v_replication:overall_status = 'CRITICAL' THEN
+    IF (v_replication:overall_status = 'CRITICAL') THEN
         v_overall_health := 'CRITICAL';
         v_alerts := ARRAY_APPEND(v_alerts, OBJECT_CONSTRUCT(
             'level', 'CRITICAL',
             'message', 'Replication is in critical state - RPO may be breached',
             'source', 'REPLICATION_HEALTH'
         ));
-    ELSEIF NOT v_failover_readiness:overall_ready::BOOLEAN THEN
+    ELSEIF (NOT TO_BOOLEAN(v_failover_readiness:overall_ready)) THEN
         v_overall_health := 'WARNING';
         v_alerts := ARRAY_APPEND(v_alerts, OBJECT_CONSTRUCT(
             'level', 'WARNING',
             'message', 'System is not ready for failover',
             'source', 'FAILOVER_READINESS'
         ));
-    ELSEIF v_rtorpo:summary:overall_status = 'NON_COMPLIANT' THEN
+    ELSEIF (v_rtorpo:summary:overall_status = 'NON_COMPLIANT') THEN
         v_overall_health := 'WARNING';
         v_alerts := ARRAY_APPEND(v_alerts, OBJECT_CONSTRUCT(
             'level', 'WARNING',
             'message', 'RTO/RPO compliance issues detected',
             'source', 'RTO_RPO_COMPLIANCE'
         ));
-    ELSEIF v_replication:overall_status = 'WARNING' THEN
+    ELSEIF (v_replication:overall_status = 'WARNING') THEN
         v_overall_health := 'ATTENTION';
         v_alerts := ARRAY_APPEND(v_alerts, OBJECT_CONSTRUCT(
             'level', 'INFO',
@@ -584,7 +583,7 @@ BEGIN
     INTO v_days_since_test
     FROM HADR_DR_TESTS WHERE STATUS = 'COMPLETED';
     
-    IF v_days_since_test IS NULL OR v_days_since_test > 30 THEN
+    IF (v_days_since_test IS NULL OR v_days_since_test > 30) THEN
         v_alerts := ARRAY_APPEND(v_alerts, OBJECT_CONSTRUCT(
             'level', 'INFO',
             'message', 'No DR test in over 30 days. Consider scheduling a test.',
@@ -622,7 +621,7 @@ $$;
  * RBAC STORED PROCEDURE: Generate DR Runbook
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_GENERATE_DR_RUNBOOK(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.HADR.RBAC_GENERATE_DR_RUNBOOK(
     P_GROUP_NAME VARCHAR
 )
 RETURNS VARIANT
@@ -631,8 +630,8 @@ EXECUTE AS CALLER
 AS
 $$
 DECLARE
-    v_group OBJECT;
-    v_runbook ARRAY := ARRAY_CONSTRUCT();
+    v_group VARIANT;
+    v_runbook VARIANT := ARRAY_CONSTRUCT();
 BEGIN
     -- Get group details
     SELECT OBJECT_CONSTRUCT(
@@ -648,7 +647,7 @@ BEGIN
     FROM HADR_REPLICATION_GROUPS r
     WHERE r.GROUP_NAME = P_GROUP_NAME;
     
-    IF v_group IS NULL THEN
+    IF (v_group IS NULL) THEN
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Group not found: ' || P_GROUP_NAME);
     END IF;
     
@@ -659,7 +658,7 @@ BEGIN
         'title', 'Assess the Situation',
         'actions', ARRAY_CONSTRUCT(
             'Determine if failover is necessary (planned maintenance vs. unplanned outage)',
-            'Check replication status: CALL RBAC_CHECK_REPLICATION_STATUS(''' || P_GROUP_NAME || ''')',
+            'Check replication status: CALL ADMIN.HADR.RBAC_CHECK_REPLICATION_STATUS(''' || P_GROUP_NAME || ''')',
             'Verify target account accessibility',
             'Notify stakeholders of potential failover'
         ),
@@ -671,7 +670,7 @@ BEGIN
         'phase', 'PREPARATION',
         'title', 'Prepare for Failover',
         'actions', ARRAY_CONSTRUCT(
-            'If planned: Ensure final replication sync - CALL RBAC_REFRESH_REPLICATION(''' || P_GROUP_NAME || ''')',
+            'If planned: Ensure final replication sync - CALL ADMIN.HADR.RBAC_REFRESH_REPLICATION(''' || P_GROUP_NAME || ''')',
             'Document current RPO status and any expected data loss',
             'Prepare application connection string updates',
             'Alert application teams of impending failover'
@@ -685,12 +684,12 @@ BEGIN
         'title', 'Execute Failover',
         'actions', ARRAY_CONSTRUCT(
             'For PLANNED failover:',
-            '  CALL RBAC_INITIATE_FAILOVER(''' || P_GROUP_NAME || ''', ''PLANNED'', ''<reason>'', TRUE)',
+            '  CALL ADMIN.HADR.RBAC_INITIATE_FAILOVER(''' || P_GROUP_NAME || ''', ''PLANNED'', ''<reason>'', TRUE)',
             '',
             'For UNPLANNED/EMERGENCY failover:',
-            '  CALL RBAC_INITIATE_FAILOVER(''' || P_GROUP_NAME || ''', ''UNPLANNED'', ''<reason>'', TRUE)'
+            '  CALL ADMIN.HADR.RBAC_INITIATE_FAILOVER(''' || P_GROUP_NAME || ''', ''UNPLANNED'', ''<reason>'', TRUE)'
         ),
-        'target_account', v_group:target_account::VARCHAR,
+        'target_account', TO_VARCHAR(v_group:target_account),
         'estimated_time', '5-15 minutes'
     ));
     
@@ -699,7 +698,7 @@ BEGIN
         'phase', 'VALIDATION',
         'title', 'Validate Failover',
         'actions', ARRAY_CONSTRUCT(
-            'Verify databases are accessible on ' || v_group:target_account::VARCHAR,
+            'Verify databases are accessible on ' || TO_VARCHAR(v_group:target_account),
             'Check data integrity with sample queries',
             'Verify application connectivity',
             'Run smoke tests on critical functions'
@@ -728,7 +727,7 @@ BEGIN
             'Monitor original primary region recovery',
             'Re-establish replication to original primary',
             'Schedule failback window',
-            'Execute failback: CALL RBAC_INITIATE_FAILBACK(''' || P_GROUP_NAME || ''', TRUE)'
+            'Execute failback: CALL ADMIN.HADR.RBAC_INITIATE_FAILBACK(''' || P_GROUP_NAME || ''', TRUE)'
         )
     ));
     
@@ -757,15 +756,15 @@ $$;
 
 GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_REPLICATION_HEALTH_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
 GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_FAILOVER_READINESS_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_RTORPO_COMPLIANCE_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_FAILOVER_EVENTS_DASHBOARD(INTEGER) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_DR_TEST_RESULTS_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_RTORPO_COMPLIANCE_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_FAILOVER_EVENTS_DASHBOARD(INTEGER) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_DR_TEST_RESULTS_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
 GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_HADR_MONITORING_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_GENERATE_DR_RUNBOOK(VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_GENERATE_DR_RUNBOOK(VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
 
 -- DBAdmins can view dashboards
-GRANT USAGE ON PROCEDURE RBAC_REPLICATION_HEALTH_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_FAILOVER_READINESS_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_RTORPO_COMPLIANCE_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_HADR_MONITORING_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_GENERATE_DR_RUNBOOK(VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_REPLICATION_HEALTH_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_FAILOVER_READINESS_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_RTORPO_COMPLIANCE_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_HADR_MONITORING_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.HADR.RBAC_GENERATE_DR_RUNBOOK(VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;

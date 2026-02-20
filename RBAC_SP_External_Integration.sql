@@ -60,6 +60,13 @@
 -- SECTION 1: INFRASTRUCTURE SETUP
 -- #############################################################################
 
+-- =============================================================================
+-- DEPLOYMENT CONTEXT
+-- =============================================================================
+USE ROLE ACCOUNTADMIN;
+USE DATABASE ADMIN;
+USE SCHEMA RBAC;
+
 /*******************************************************************************
  * RBAC STORED PROCEDURE: Setup External Access for ServiceNow
  * 
@@ -75,7 +82,7 @@
  * Execution Role: ACCOUNTADMIN
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_SETUP_SERVICENOW_ACCESS(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.RBAC.RBAC_SETUP_SERVICENOW_ACCESS(
     P_INSTANCE_NAME VARCHAR,
     P_SECRET_NAME VARCHAR,
     P_USERNAME VARCHAR,
@@ -148,7 +155,7 @@ $$;
  * RBAC STORED PROCEDURE: Setup External Access for Jira
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_SETUP_JIRA_ACCESS(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.RBAC.RBAC_SETUP_JIRA_ACCESS(
     P_JIRA_URL VARCHAR,           -- e.g., 'mycompany.atlassian.net' or 'jira.mycompany.com'
     P_SECRET_NAME VARCHAR,
     P_EMAIL VARCHAR,              -- Jira user email
@@ -217,6 +224,11 @@ $$;
  * 
  * Purpose: Creates a ServiceNow ticket for access request approval
  * 
+ * PREREQUISITES:
+ *   - Run RBAC_SETUP_SERVICENOW_ACCESS() first to create the integration and secret
+ *   - Default secret name: SERVICENOW_CREDENTIALS
+ *   - Default integration name: SERVICENOW_INTEGRATION
+ * 
  * Parameters:
  *   P_REQUESTOR       - User requesting access
  *   P_ENVIRONMENT     - Target environment
@@ -227,7 +239,12 @@ $$;
  *   P_SECRET_NAME     - Secret containing credentials
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_SERVICENOW_CREATE_ACCESS_REQUEST(
+-- ============================================================================
+-- COMMENTED OUT: Uncomment after running RBAC_SETUP_SERVICENOW_ACCESS()
+-- This procedure requires SERVICENOW_INTEGRATION and ADMIN.RBAC.SERVICENOW_CREDENTIALS
+-- ============================================================================
+/*
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.RBAC.RBAC_SERVICENOW_CREATE_ACCESS_REQUEST(
     P_REQUESTOR VARCHAR,
     P_ENVIRONMENT VARCHAR,
     P_DOMAIN VARCHAR,
@@ -241,7 +258,7 @@ LANGUAGE PYTHON
 RUNTIME_VERSION = '3.11'
 HANDLER = 'create_ticket'
 EXTERNAL_ACCESS_INTEGRATIONS = (SERVICENOW_INTEGRATION)
-SECRETS = ('cred' = SERVICENOW_CREDENTIALS)
+SECRETS = ('cred' = ADMIN.RBAC.SERVICENOW_CREDENTIALS)
 PACKAGES = ('requests', 'snowflake-snowpark-python')
 AS
 $$
@@ -334,12 +351,17 @@ Run in Snowflake: CALL RBAC_CONFIGURE_USER('{p_requestor}', '{p_environment}', '
             "message": str(e)
         }
 $$;
+*/
 
 /*******************************************************************************
  * RBAC STORED PROCEDURE: Check ServiceNow Ticket Status
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_SERVICENOW_CHECK_TICKET_STATUS(
+-- ============================================================================
+-- COMMENTED OUT: Uncomment after running RBAC_SETUP_SERVICENOW_ACCESS()
+-- ============================================================================
+/*
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.RBAC.RBAC_SERVICENOW_CHECK_TICKET_STATUS(
     P_TICKET_NUMBER VARCHAR,
     P_INTEGRATION_NAME VARCHAR DEFAULT 'SERVICENOW_INTEGRATION',
     P_SECRET_NAME VARCHAR DEFAULT 'SERVICENOW_CREDENTIALS'
@@ -349,7 +371,7 @@ LANGUAGE PYTHON
 RUNTIME_VERSION = '3.11'
 HANDLER = 'check_status'
 EXTERNAL_ACCESS_INTEGRATIONS = (SERVICENOW_INTEGRATION)
-SECRETS = ('cred' = SERVICENOW_CREDENTIALS)
+SECRETS = ('cred' = ADMIN.RBAC.SERVICENOW_CREDENTIALS)
 PACKAGES = ('requests', 'snowflake-snowpark-python')
 AS
 $$
@@ -422,7 +444,11 @@ $$;
  * RBAC STORED PROCEDURE: Log Audit Event to ServiceNow
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_SERVICENOW_LOG_AUDIT_EVENT(
+-- ============================================================================
+-- COMMENTED OUT: Uncomment after running RBAC_SETUP_SERVICENOW_ACCESS()
+-- ============================================================================
+/*
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.RBAC.RBAC_SERVICENOW_LOG_AUDIT_EVENT(
     P_EVENT_TYPE VARCHAR,         -- 'GRANT', 'REVOKE', 'CREATE', 'MODIFY'
     P_USER_NAME VARCHAR,
     P_ROLE_NAME VARCHAR,
@@ -437,7 +463,7 @@ LANGUAGE PYTHON
 RUNTIME_VERSION = '3.11'
 HANDLER = 'log_event'
 EXTERNAL_ACCESS_INTEGRATIONS = (SERVICENOW_INTEGRATION)
-SECRETS = ('cred' = SERVICENOW_CREDENTIALS)
+SECRETS = ('cred' = ADMIN.RBAC.SERVICENOW_CREDENTIALS)
 PACKAGES = ('requests', 'snowflake-snowpark-python')
 AS
 $$
@@ -499,6 +525,7 @@ Details: {p_details or 'N/A'}
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
 $$;
+*/
 
 -- #############################################################################
 -- SECTION 3: JIRA INTEGRATION PROCEDURES
@@ -508,7 +535,11 @@ $$;
  * RBAC STORED PROCEDURE: Create Access Request Issue in Jira
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_JIRA_CREATE_ACCESS_REQUEST(
+-- ============================================================================
+-- COMMENTED OUT: Uncomment after running RBAC_SETUP_JIRA_ACCESS()
+-- ============================================================================
+/*
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.RBAC.RBAC_JIRA_CREATE_ACCESS_REQUEST(
     P_REQUESTOR VARCHAR,
     P_ENVIRONMENT VARCHAR,
     P_DOMAIN VARCHAR,
@@ -523,7 +554,7 @@ LANGUAGE PYTHON
 RUNTIME_VERSION = '3.11'
 HANDLER = 'create_issue'
 EXTERNAL_ACCESS_INTEGRATIONS = (JIRA_INTEGRATION)
-SECRETS = ('cred' = JIRA_CREDENTIALS)
+SECRETS = ('cred' = ADMIN.RBAC.JIRA_CREDENTIALS)
 PACKAGES = ('requests', 'snowflake-snowpark-python')
 AS
 $$
@@ -612,12 +643,17 @@ CALL RBAC_CONFIGURE_USER('{p_requestor}', '{p_environment}', '{p_domain}', '{p_c
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
 $$;
+*/
 
 /*******************************************************************************
  * RBAC STORED PROCEDURE: Check Jira Issue Status
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_JIRA_CHECK_ISSUE_STATUS(
+-- ============================================================================
+-- COMMENTED OUT: Uncomment after running RBAC_SETUP_JIRA_ACCESS()
+-- ============================================================================
+/*
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.RBAC.RBAC_JIRA_CHECK_ISSUE_STATUS(
     P_ISSUE_KEY VARCHAR,
     P_INTEGRATION_NAME VARCHAR DEFAULT 'JIRA_INTEGRATION',
     P_SECRET_NAME VARCHAR DEFAULT 'JIRA_CREDENTIALS'
@@ -627,7 +663,7 @@ LANGUAGE PYTHON
 RUNTIME_VERSION = '3.11'
 HANDLER = 'check_status'
 EXTERNAL_ACCESS_INTEGRATIONS = (JIRA_INTEGRATION)
-SECRETS = ('cred' = JIRA_CREDENTIALS)
+SECRETS = ('cred' = ADMIN.RBAC.JIRA_CREDENTIALS)
 PACKAGES = ('requests', 'snowflake-snowpark-python')
 AS
 $$
@@ -682,6 +718,7 @@ def check_status(session, p_issue_key, p_integration_name, p_secret_name):
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
 $$;
+*/
 
 -- #############################################################################
 -- SECTION 4: UNIFIED WORKFLOW PROCEDURES
@@ -693,7 +730,7 @@ $$;
  * Purpose: Unified procedure to request access - creates ticket in configured system
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_REQUEST_ACCESS(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.RBAC.RBAC_REQUEST_ACCESS(
     P_REQUESTOR VARCHAR,
     P_ENVIRONMENT VARCHAR,
     P_DOMAIN VARCHAR,
@@ -711,22 +748,22 @@ DECLARE
     v_result VARIANT;
 BEGIN
     -- Validate inputs
-    IF P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD') THEN
+    IF (P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD')) THEN
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Invalid environment');
     END IF;
     
-    IF P_CAPABILITY NOT IN ('END_USER', 'ANALYST', 'DEVELOPER', 'TEAM_LEADER', 'DATA_SCIENTIST', 'DBADMIN') THEN
+    IF (P_CAPABILITY NOT IN ('END_USER', 'ANALYST', 'DEVELOPER', 'TEAM_LEADER', 'DATA_SCIENTIST', 'DBADMIN')) THEN
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Invalid capability level');
     END IF;
     
     -- Create ticket in appropriate system
-    IF UPPER(P_TICKET_SYSTEM) = 'SERVICENOW' THEN
+    IF (UPPER(P_TICKET_SYSTEM) = 'SERVICENOW') THEN
         CALL RBAC_SERVICENOW_CREATE_ACCESS_REQUEST(
             P_REQUESTOR, P_ENVIRONMENT, P_DOMAIN, P_CAPABILITY, P_JUSTIFICATION,
             'SERVICENOW_INTEGRATION', 'SERVICENOW_CREDENTIALS'
         ) INTO v_result;
-    ELSEIF UPPER(P_TICKET_SYSTEM) = 'JIRA' THEN
-        IF P_PROJECT_KEY IS NULL THEN
+    ELSEIF (UPPER(P_TICKET_SYSTEM) = 'JIRA') THEN
+        IF (P_PROJECT_KEY IS NULL) THEN
             RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Project key required for Jira');
         END IF;
         CALL RBAC_JIRA_CREATE_ACCESS_REQUEST(
@@ -792,19 +829,19 @@ DECLARE
     v_grant_result VARIANT;
 BEGIN
     -- Check ticket status
-    IF UPPER(P_TICKET_SYSTEM) = 'SERVICENOW' THEN
+    IF (UPPER(P_TICKET_SYSTEM) = 'SERVICENOW') THEN
         CALL RBAC_SERVICENOW_CHECK_TICKET_STATUS(P_TICKET_NUMBER) INTO v_status;
-    ELSEIF UPPER(P_TICKET_SYSTEM) = 'JIRA' THEN
+    ELSEIF (UPPER(P_TICKET_SYSTEM) = 'JIRA') THEN
         CALL RBAC_JIRA_CHECK_ISSUE_STATUS(P_TICKET_NUMBER) INTO v_status;
     ELSE
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Invalid ticket system');
     END IF;
     
     -- Check if approved
-    IF v_status:status = 'SUCCESS' AND v_status:is_approved = TRUE THEN
+    IF (v_status:status = 'SUCCESS' AND v_status:is_approved = TRUE) THEN
         -- Grant access if parameters provided
-        IF P_REQUESTOR IS NOT NULL AND P_ENVIRONMENT IS NOT NULL AND 
-           P_DOMAIN IS NOT NULL AND P_CAPABILITY IS NOT NULL THEN
+        IF (P_REQUESTOR IS NOT NULL AND P_ENVIRONMENT IS NOT NULL AND 
+           P_DOMAIN IS NOT NULL AND P_CAPABILITY IS NOT NULL) THEN
             
             CALL RBAC_CONFIGURE_USER(
                 P_REQUESTOR, P_ENVIRONMENT, P_DOMAIN, P_CAPABILITY,
@@ -844,7 +881,7 @@ BEGIN
                 'next_step', 'Re-run with all parameters to grant access'
             );
         END IF;
-    ELSEIF v_status:is_approved = FALSE THEN
+    ELSEIF (v_status:is_approved = FALSE) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'SUCCESS',
             'action', 'NOT_APPROVED',
@@ -868,7 +905,7 @@ $$;
  * Purpose: Creates periodic access review tickets for all users with RBAC roles
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_CREATE_ACCESS_REVIEW_TICKETS(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.RBAC.RBAC_CREATE_ACCESS_REVIEW_TICKETS(
     P_ENVIRONMENT VARCHAR DEFAULT NULL,
     P_TICKET_SYSTEM VARCHAR DEFAULT 'SERVICENOW',
     P_PROJECT_KEY VARCHAR DEFAULT NULL,
@@ -883,7 +920,7 @@ DECLARE
     v_reviews_created ARRAY := ARRAY_CONSTRUCT();
     v_env_filter VARCHAR;
 BEGIN
-    IF P_ENVIRONMENT IS NOT NULL THEN
+    IF (P_ENVIRONMENT IS NOT NULL) THEN
         v_env_filter := '_' || P_ENVIRONMENT || '_';
     ELSE
         v_env_filter := '_%_';
@@ -903,7 +940,7 @@ BEGIN
           AND (u.TYPE = 'PERSON' OR u.TYPE IS NULL)
         GROUP BY u.NAME, u.EMAIL
     ) DO
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             -- Create review ticket (implementation depends on ticket system)
             -- This is a placeholder - would call SERVICENOW or JIRA procedure
             NULL;

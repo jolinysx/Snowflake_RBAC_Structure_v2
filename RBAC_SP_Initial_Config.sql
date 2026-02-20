@@ -100,6 +100,10 @@
  *   CALL RBAC_VALIDATE_CONFIG();
  ******************************************************************************/
 
+
+ CALL RBAC_INITIAL_CONFIG(NULL, FALSE);
+
+
 CREATE OR REPLACE SECURE PROCEDURE RBAC_INITIAL_CONFIG(
     P_ENVIRONMENTS ARRAY DEFAULT NULL,
     P_DRY_RUN BOOLEAN DEFAULT FALSE
@@ -116,9 +120,49 @@ DECLARE
     v_errors ARRAY := ARRAY_CONSTRUCT();
     v_sql VARCHAR;
     v_functional_roles ARRAY := ARRAY_CONSTRUCT('END_USER', 'ANALYST', 'DEVELOPER', 'TEAM_LEADER', 'DATA_SCIENTIST', 'DBADMIN');
+    v_system_roles ARRAY;
+    v_role_obj OBJECT;
+    v_role_hierarchy ARRAY;
+    v_grant OBJECT;
+    v_system_privileges ARRAY;
+    v_priv OBJECT;
+    v_role_level VARCHAR;
+    v_role_name VARCHAR;
+    v_account_privileges ARRAY;
+    v_schemas ARRAY;
+    v_schema_name VARCHAR;
+    v_schema_privileges ARRAY;
+    v_env_grants ARRAY;
+    v_validation OBJECT;
+    v_system_grants ARRAY;
+    i INTEGER;
+    j INTEGER;
+    env_idx INTEGER;
+    role_idx INTEGER;
+    v_comment VARCHAR;
+    v_hierarchy ARRAY;
+    v_privileges ARRAY;
+    v_hierarchy_grants ARRAY;
+    grant_idx INTEGER;
+    v_dbadmin_role VARCHAR;
+    v_dbadmin_privileges ARRAY;
+    priv_idx INTEGER;
+    v_admin_grants ARRAY;
+    v_env_admin_grants ARRAY;
+    v_validation_results ARRAY;
+    v_validation_errors ARRAY;
+    v_db_exists BOOLEAN;
+    v_schema_count INTEGER;
+    v_role_count INTEGER;
+    v_grant_count INTEGER;
+    v_env_role_count INTEGER;
+    v_owner VARCHAR;
+    v_hierarchy_count INTEGER;
+    val_idx INTEGER;
+    v_final_status VARCHAR;
 BEGIN
     -- Default to all environments if not specified
-    IF P_ENVIRONMENTS IS NULL THEN
+    IF (P_ENVIRONMENTS IS NULL) THEN
         v_environments := ARRAY_CONSTRUCT('DEV', 'TST', 'UAT', 'PPE', 'PRD');
     ELSE
         v_environments := P_ENVIRONMENTS;
@@ -126,7 +170,7 @@ BEGIN
     
     -- Validate environments
     FOR i IN 0 TO ARRAY_SIZE(v_environments) - 1 DO
-        IF v_environments[i] NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD') THEN
+        IF (v_environments[i] NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD')) THEN
             RETURN OBJECT_CONSTRUCT(
                 'status', 'ERROR',
                 'message', 'Invalid environment: ' || v_environments[i]::VARCHAR || '. Must be one of: DEV, TST, UAT, PPE, PRD'
@@ -137,26 +181,19 @@ BEGIN
     -- =========================================================================
     -- SECTION 1: ACCOUNT SETTINGS
     -- =========================================================================
-    v_sql := 'ALTER ACCOUNT SET DEFAULT_SECONDARY_ROLES = (''ALL'')';
+    -- Note: DEFAULT_SECONDARY_ROLES is a USER-level parameter, not ACCOUNT-level
+    -- Users can enable it individually via: ALTER USER <name> SET DEFAULT_SECONDARY_ROLES = ('ALL')
+    -- Skipping account-level configuration as it's not supported
     v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT(
         'section', 'ACCOUNT_SETTINGS',
-        'action', 'Enable SECONDARY_ROLES',
-        'sql', v_sql
+        'action', 'Skip SECONDARY_ROLES (user-level setting)',
+        'sql', '-- DEFAULT_SECONDARY_ROLES is set per user, not at account level'
     ));
-    
-    IF NOT P_DRY_RUN THEN
-        BEGIN
-            EXECUTE IMMEDIATE v_sql;
-        EXCEPTION
-            WHEN OTHER THEN
-                v_errors := ARRAY_APPEND(v_errors, OBJECT_CONSTRUCT('sql', v_sql, 'error', SQLERRM));
-        END;
-    END IF;
 
     -- =========================================================================
     -- SECTION 2: SYSTEM ROLES (SRS)
     -- =========================================================================
-    LET v_system_roles ARRAY := ARRAY_CONSTRUCT(
+    v_system_roles := ARRAY_CONSTRUCT(
         OBJECT_CONSTRUCT('name', 'SRS_ACCOUNT_ADMIN', 'comment', 'System role for account-level administration'),
         OBJECT_CONSTRUCT('name', 'SRS_SECURITY_ADMIN', 'comment', 'System role for security and access management'),
         OBJECT_CONSTRUCT('name', 'SRS_USER_ADMIN', 'comment', 'System role for user management'),
@@ -165,7 +202,7 @@ BEGIN
     );
     
     FOR i IN 0 TO ARRAY_SIZE(v_system_roles) - 1 DO
-        LET v_role_obj OBJECT := v_system_roles[i];
+        v_role_obj := v_system_roles[i];
         v_sql := 'CREATE ROLE IF NOT EXISTS ' || v_role_obj:name::VARCHAR || 
                  ' COMMENT = ''' || v_role_obj:comment::VARCHAR || '''';
         v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT(
@@ -174,7 +211,7 @@ BEGIN
             'sql', v_sql
         ));
         
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 EXECUTE IMMEDIATE v_sql;
             EXCEPTION
@@ -187,7 +224,7 @@ BEGIN
     -- =========================================================================
     -- SECTION 3: SYSTEM ROLE HIERARCHY
     -- =========================================================================
-    LET v_system_grants ARRAY := ARRAY_CONSTRUCT(
+    v_system_grants := ARRAY_CONSTRUCT(
         'GRANT ROLE SRS_ACCOUNT_ADMIN TO ROLE ACCOUNTADMIN',
         'GRANT ROLE SRS_SECURITY_ADMIN TO ROLE SECURITYADMIN',
         'GRANT ROLE SRS_USER_ADMIN TO ROLE USERADMIN',
@@ -206,7 +243,7 @@ BEGIN
             'sql', v_sql
         ));
         
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 EXECUTE IMMEDIATE v_sql;
             EXCEPTION
@@ -219,7 +256,7 @@ BEGIN
     -- =========================================================================
     -- SECTION 4: SYSTEM ROLE PRIVILEGES
     -- =========================================================================
-    LET v_system_privileges ARRAY := ARRAY_CONSTRUCT(
+    v_system_privileges := ARRAY_CONSTRUCT(
         'GRANT CREATE ROLE ON ACCOUNT TO ROLE SRS_SECURITY_ADMIN',
         'GRANT MANAGE GRANTS ON ACCOUNT TO ROLE SRS_SECURITY_ADMIN',
         'GRANT CREATE USER ON ACCOUNT TO ROLE SRS_USER_ADMIN',
@@ -239,7 +276,7 @@ BEGIN
             'sql', v_sql
         ));
         
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 EXECUTE IMMEDIATE v_sql;
             EXCEPTION
@@ -257,13 +294,11 @@ BEGIN
         
         -- Create functional roles for this environment
         FOR role_idx IN 0 TO ARRAY_SIZE(v_functional_roles) - 1 DO
-            LET v_role_level VARCHAR := v_functional_roles[role_idx];
-            LET v_role_name VARCHAR := 'SRF_' || v_env || '_' || v_role_level;
-            LET v_is_dev BOOLEAN := (v_env = 'DEV');
-            LET v_comment VARCHAR;
+            v_role_level := v_functional_roles[role_idx];
+            v_role_name := 'SRF_' || v_env || '_' || v_role_level;
             
             -- Set appropriate comment based on environment and role
-            IF v_role_level IN ('DEVELOPER', 'TEAM_LEADER', 'DATA_SCIENTIST') AND NOT v_is_dev THEN
+            IF (v_role_level IN ('DEVELOPER', 'TEAM_LEADER', 'DATA_SCIENTIST') AND (NOT (v_env = 'DEV'))) THEN
                 v_comment := v_env || ': ' || v_role_level || ' - read-only capability (requires SRA_* for data access)';
             ELSE
                 v_comment := v_env || ': ' || v_role_level || ' - capability role (requires SRA_* for data access)';
@@ -277,7 +312,7 @@ BEGIN
                 'sql', v_sql
             ));
             
-            IF NOT P_DRY_RUN THEN
+            IF (NOT P_DRY_RUN) THEN
                 BEGIN
                     EXECUTE IMMEDIATE v_sql;
                 EXCEPTION
@@ -288,7 +323,7 @@ BEGIN
         END FOR;
         
         -- Create functional role hierarchy for this environment
-        LET v_hierarchy_grants ARRAY := ARRAY_CONSTRUCT(
+        v_hierarchy_grants := ARRAY_CONSTRUCT(
             'GRANT ROLE SRF_' || v_env || '_END_USER TO ROLE SRF_' || v_env || '_ANALYST',
             'GRANT ROLE SRF_' || v_env || '_ANALYST TO ROLE SRF_' || v_env || '_DEVELOPER',
             'GRANT ROLE SRF_' || v_env || '_DEVELOPER TO ROLE SRF_' || v_env || '_TEAM_LEADER',
@@ -305,7 +340,7 @@ BEGIN
                 'sql', v_sql
             ));
             
-            IF NOT P_DRY_RUN THEN
+            IF (NOT P_DRY_RUN) THEN
                 BEGIN
                     EXECUTE IMMEDIATE v_sql;
                 EXCEPTION
@@ -321,13 +356,13 @@ BEGIN
     -- =========================================================================
     FOR env_idx IN 0 TO ARRAY_SIZE(v_environments) - 1 DO
         v_env := v_environments[env_idx];
-        LET v_dbadmin_role VARCHAR := 'SRF_' || v_env || '_DBADMIN';
+        v_dbadmin_role := 'SRF_' || v_env || '_DBADMIN';
         
-        LET v_dbadmin_privileges ARRAY := ARRAY_CONSTRUCT(
+        v_dbadmin_privileges := ARRAY_CONSTRUCT(
             'GRANT CREATE DATABASE ON ACCOUNT TO ROLE ' || v_dbadmin_role,
             'GRANT CREATE WAREHOUSE ON ACCOUNT TO ROLE ' || v_dbadmin_role,
             'GRANT APPLY MASKING POLICY ON ACCOUNT TO ROLE ' || v_dbadmin_role,
-            'GRANT APPLY ROW ACCESS POLICY ON ACCOUNT TO ROLE ' || v_dbadmin_role,
+            -- Note: APPLY ROW ACCESS POLICY ON ACCOUNT is not supported - grant at schema level instead
             'GRANT APPLY TAG ON ACCOUNT TO ROLE ' || v_dbadmin_role
         );
         
@@ -339,7 +374,7 @@ BEGIN
                 'sql', v_sql
             ));
             
-            IF NOT P_DRY_RUN THEN
+            IF (NOT P_DRY_RUN) THEN
                 BEGIN
                     EXECUTE IMMEDIATE v_sql;
                 EXCEPTION
@@ -354,7 +389,7 @@ BEGIN
     -- SECTION 7: SRS_DEVOPS CONFIGURATION
     -- =========================================================================
     -- Grant DEV END_USER to DEVOPS for CI/CD metadata access
-    IF ARRAY_CONTAINS('DEV'::VARIANT, v_environments) THEN
+    IF (ARRAY_CONTAINS('DEV'::VARIANT, v_environments)) THEN
         v_sql := 'GRANT ROLE SRF_DEV_END_USER TO ROLE SRS_DEVOPS';
         v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT(
             'section', 'DEVOPS_CONFIG',
@@ -362,7 +397,7 @@ BEGIN
             'sql', v_sql
         ));
         
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 EXECUTE IMMEDIATE v_sql;
             EXCEPTION
@@ -385,7 +420,7 @@ BEGIN
         'sql', v_sql
     ));
     
-    IF NOT P_DRY_RUN THEN
+    IF (NOT P_DRY_RUN) THEN
         BEGIN
             EXECUTE IMMEDIATE v_sql;
         EXCEPTION
@@ -402,7 +437,7 @@ BEGIN
         'sql', v_sql
     ));
     
-    IF NOT P_DRY_RUN THEN
+    IF (NOT P_DRY_RUN) THEN
         BEGIN
             EXECUTE IMMEDIATE v_sql;
         EXCEPTION
@@ -419,7 +454,7 @@ BEGIN
         'sql', v_sql
     ));
     
-    IF NOT P_DRY_RUN THEN
+    IF (NOT P_DRY_RUN) THEN
         BEGIN
             EXECUTE IMMEDIATE v_sql;
         EXCEPTION
@@ -436,7 +471,7 @@ BEGIN
         'sql', v_sql
     ));
     
-    IF NOT P_DRY_RUN THEN
+    IF (NOT P_DRY_RUN) THEN
         BEGIN
             EXECUTE IMMEDIATE v_sql;
         EXCEPTION
@@ -453,7 +488,7 @@ BEGIN
         'sql', v_sql
     ));
     
-    IF NOT P_DRY_RUN THEN
+    IF (NOT P_DRY_RUN) THEN
         BEGIN
             EXECUTE IMMEDIATE v_sql;
         EXCEPTION
@@ -470,7 +505,7 @@ BEGIN
         'sql', v_sql
     ));
     
-    IF NOT P_DRY_RUN THEN
+    IF (NOT P_DRY_RUN) THEN
         BEGIN
             EXECUTE IMMEDIATE v_sql;
         EXCEPTION
@@ -487,7 +522,7 @@ BEGIN
         'sql', v_sql
     ));
     
-    IF NOT P_DRY_RUN THEN
+    IF (NOT P_DRY_RUN) THEN
         BEGIN
             EXECUTE IMMEDIATE v_sql;
         EXCEPTION
@@ -504,7 +539,7 @@ BEGIN
         'sql', v_sql
     ));
     
-    IF NOT P_DRY_RUN THEN
+    IF (NOT P_DRY_RUN) THEN
         BEGIN
             EXECUTE IMMEDIATE v_sql;
         EXCEPTION
@@ -521,7 +556,7 @@ BEGIN
         'sql', v_sql
     ));
     
-    IF NOT P_DRY_RUN THEN
+    IF (NOT P_DRY_RUN) THEN
         BEGIN
             EXECUTE IMMEDIATE v_sql;
         EXCEPTION
@@ -535,7 +570,7 @@ BEGIN
     -- =========================================================================
     -- Grant privileges on ADMIN database and schemas to appropriate roles
     
-    LET v_admin_grants ARRAY := ARRAY_CONSTRUCT(
+    v_admin_grants := ARRAY_CONSTRUCT(
         -- Database-level grants
         'GRANT USAGE ON DATABASE ADMIN TO ROLE SRS_SECURITY_ADMIN',
         'GRANT USAGE ON DATABASE ADMIN TO ROLE SRS_USER_ADMIN',
@@ -624,7 +659,7 @@ BEGIN
             'sql', v_sql
         ));
         
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 EXECUTE IMMEDIATE v_sql;
             EXCEPTION
@@ -641,7 +676,7 @@ BEGIN
     FOR env_idx IN 0 TO ARRAY_SIZE(v_environments) - 1 DO
         v_env := v_environments[env_idx];
         
-        LET v_env_admin_grants ARRAY := ARRAY_CONSTRUCT(
+        v_env_admin_grants := ARRAY_CONSTRUCT(
             -- All functional roles can use RBAC procedures
             'GRANT USAGE ON DATABASE ADMIN TO ROLE SRF_' || v_env || '_END_USER',
             'GRANT USAGE ON SCHEMA ADMIN.RBAC TO ROLE SRF_' || v_env || '_END_USER',
@@ -667,7 +702,7 @@ BEGIN
                 'sql', v_sql
             ));
             
-            IF NOT P_DRY_RUN THEN
+            IF (NOT P_DRY_RUN) THEN
                 BEGIN
                     EXECUTE IMMEDIATE v_sql;
                 EXCEPTION
@@ -683,13 +718,13 @@ BEGIN
     -- =========================================================================
     -- Validate that all objects were created successfully
     
-    IF NOT P_DRY_RUN THEN
-        LET v_validation_results ARRAY := ARRAY_CONSTRUCT();
-        LET v_validation_errors ARRAY := ARRAY_CONSTRUCT();
-        LET v_db_exists BOOLEAN := FALSE;
-        LET v_schema_count INTEGER := 0;
-        LET v_role_count INTEGER := 0;
-        LET v_grant_count INTEGER := 0;
+    IF (NOT P_DRY_RUN) THEN
+        v_validation_results := ARRAY_CONSTRUCT();
+        v_validation_errors := ARRAY_CONSTRUCT();
+        v_db_exists := FALSE;
+        v_schema_count := 0;
+        v_role_count := 0;
+        v_grant_count := 0;
         
         -- 11.1 Validate ADMIN database exists
         BEGIN
@@ -697,7 +732,7 @@ BEGIN
             FROM INFORMATION_SCHEMA.DATABASES
             WHERE DATABASE_NAME = 'ADMIN';
             
-            IF v_db_exists THEN
+            IF (v_db_exists) THEN
                 v_validation_results := ARRAY_APPEND(v_validation_results, OBJECT_CONSTRUCT(
                     'check', 'ADMIN_DATABASE',
                     'status', 'PASS',
@@ -720,7 +755,7 @@ BEGIN
             FROM ADMIN.INFORMATION_SCHEMA.SCHEMATA
             WHERE SCHEMA_NAME IN ('RBAC', 'DEVOPS', 'CLONES', 'SECURITY');
             
-            IF v_schema_count = 4 THEN
+            IF (v_schema_count = 4) THEN
                 v_validation_results := ARRAY_APPEND(v_validation_results, OBJECT_CONSTRUCT(
                     'check', 'ADMIN_SCHEMAS',
                     'status', 'PASS',
@@ -752,7 +787,7 @@ BEGIN
             WHERE DELETED_ON IS NULL
               AND NAME IN ('SRS_ACCOUNT_ADMIN', 'SRS_SECURITY_ADMIN', 'SRS_USER_ADMIN', 'SRS_SYSTEM_ADMIN', 'SRS_DEVOPS');
             
-            IF v_role_count = 5 THEN
+            IF (v_role_count = 5) THEN
                 v_validation_results := ARRAY_APPEND(v_validation_results, OBJECT_CONSTRUCT(
                     'check', 'SYSTEM_ROLES',
                     'status', 'PASS',
@@ -780,7 +815,7 @@ BEGIN
         -- 11.4 Validate functional roles exist for each environment
         FOR env_idx IN 0 TO ARRAY_SIZE(v_environments) - 1 DO
             v_env := v_environments[env_idx];
-            LET v_env_role_count INTEGER := 0;
+            v_env_role_count := 0;
             
             BEGIN
                 SELECT COUNT(*) INTO v_env_role_count
@@ -788,7 +823,7 @@ BEGIN
                 WHERE DELETED_ON IS NULL
                   AND NAME LIKE 'SRF_' || v_env || '_%';
                 
-                IF v_env_role_count >= 6 THEN
+                IF (v_env_role_count >= 6) THEN
                     v_validation_results := ARRAY_APPEND(v_validation_results, OBJECT_CONSTRUCT(
                         'check', 'FUNCTIONAL_ROLES_' || v_env,
                         'status', 'PASS',
@@ -816,12 +851,12 @@ BEGIN
         
         -- 11.5 Validate database ownership
         BEGIN
-            LET v_owner VARCHAR := '';
+            v_owner := '';
             SELECT CATALOG_OWNER INTO v_owner
             FROM ADMIN.INFORMATION_SCHEMA.DATABASES
             WHERE DATABASE_NAME = 'ADMIN';
             
-            IF v_owner = 'SRS_SYSTEM_ADMIN' THEN
+            IF (v_owner = 'SRS_SYSTEM_ADMIN') THEN
                 v_validation_results := ARRAY_APPEND(v_validation_results, OBJECT_CONSTRUCT(
                     'check', 'ADMIN_OWNERSHIP',
                     'status', 'PASS',
@@ -855,7 +890,7 @@ BEGIN
               AND NAME = 'ADMIN'
               AND PRIVILEGE = 'USAGE';
             
-            IF v_grant_count >= 3 THEN
+            IF (v_grant_count >= 3) THEN
                 v_validation_results := ARRAY_APPEND(v_validation_results, OBJECT_CONSTRUCT(
                     'check', 'DATABASE_GRANTS',
                     'status', 'PASS',
@@ -882,7 +917,7 @@ BEGIN
         
         -- 11.7 Validate role hierarchy
         BEGIN
-            LET v_hierarchy_count INTEGER := 0;
+            v_hierarchy_count := 0;
             SELECT COUNT(*) INTO v_hierarchy_count
             FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES
             WHERE DELETED_ON IS NULL
@@ -890,7 +925,7 @@ BEGIN
               AND GRANTEE_NAME LIKE 'SR%'
               AND NAME LIKE 'SR%';
             
-            IF v_hierarchy_count >= 10 THEN
+            IF (v_hierarchy_count >= 10) THEN
                 v_validation_results := ARRAY_APPEND(v_validation_results, OBJECT_CONSTRUCT(
                     'check', 'ROLE_HIERARCHY',
                     'status', 'PASS',
@@ -926,7 +961,7 @@ BEGIN
         
         -- Add validation errors to main errors array
         FOR val_idx IN 0 TO ARRAY_SIZE(v_validation_errors) - 1 DO
-            IF v_validation_errors[val_idx]:status = 'FAIL' THEN
+            IF (v_validation_errors[val_idx]:status = 'FAIL') THEN
                 v_errors := ARRAY_APPEND(v_errors, OBJECT_CONSTRUCT(
                     'type', 'VALIDATION',
                     'check', v_validation_errors[val_idx]:check,
@@ -939,8 +974,8 @@ BEGIN
     -- =========================================================================
     -- Return Results
     -- =========================================================================
-    LET v_final_status VARCHAR := 'SUCCESS';
-    IF ARRAY_SIZE(v_errors) > 0 THEN
+    v_final_status := 'SUCCESS';
+    IF (ARRAY_SIZE(v_errors) > 0) THEN
         v_final_status := 'PARTIAL_SUCCESS';
     END IF;
     
@@ -1011,6 +1046,8 @@ $$;
  *   CALL RBAC_VALIDATE_CONFIG();
  ******************************************************************************/
 
+CALL RBAC_VALIDATE_CONFIG();
+
 CREATE OR REPLACE SECURE PROCEDURE RBAC_VALIDATE_CONFIG()
 RETURNS VARIANT
 LANGUAGE SQL
@@ -1022,17 +1059,43 @@ DECLARE
     v_passed INTEGER := 0;
     v_failed INTEGER := 0;
     v_warnings INTEGER := 0;
+    v_db_count INTEGER;
+    v_owner VARCHAR;
+    v_schema_exists INTEGER;
+    v_schema_count INTEGER;
+    v_role_exists INTEGER;
+    v_role_count INTEGER;
+    v_func_role_count INTEGER;
+    env VARCHAR;
+    v_proc_count INTEGER;
+    v_public_grant INTEGER;
+    v_required_schemas ARRAY;
+    schema_idx INTEGER;
+    v_schema_name VARCHAR;
+    v_system_roles ARRAY;
+    role_idx INTEGER;
+    v_role_name VARCHAR;
+    v_environments ARRAY;
+    env_idx INTEGER;
+    v_env VARCHAR;
+    v_schema_proc_checks ARRAY;
+    check_idx INTEGER;
+    v_check_obj OBJECT;
+    v_min_procs INTEGER;
+    v_grant_count INTEGER;
+    v_check_schema VARCHAR;
+    v_overall_status VARCHAR;
 BEGIN
     -- =========================================================================
     -- CHECK 1: ADMIN Database
     -- =========================================================================
     BEGIN
-        LET v_db_count INTEGER := 0;
+        v_db_count := 0;
         SELECT COUNT(*) INTO v_db_count
         FROM INFORMATION_SCHEMA.DATABASES
         WHERE DATABASE_NAME = 'ADMIN';
         
-        IF v_db_count = 1 THEN
+        IF (v_db_count = 1) THEN
             v_checks := ARRAY_APPEND(v_checks, OBJECT_CONSTRUCT(
                 'check', 'ADMIN_DATABASE',
                 'status', 'PASS',
@@ -1063,12 +1126,12 @@ BEGIN
     -- CHECK 2: ADMIN Database Ownership
     -- =========================================================================
     BEGIN
-        LET v_owner VARCHAR := '';
+        v_owner := '';
         SELECT DATABASE_OWNER INTO v_owner
         FROM INFORMATION_SCHEMA.DATABASES
         WHERE DATABASE_NAME = 'ADMIN';
         
-        IF v_owner = 'SRS_SYSTEM_ADMIN' THEN
+        IF (v_owner = 'SRS_SYSTEM_ADMIN') THEN
             v_checks := ARRAY_APPEND(v_checks, OBJECT_CONSTRUCT(
                 'check', 'ADMIN_OWNERSHIP',
                 'status', 'PASS',
@@ -1098,16 +1161,16 @@ BEGIN
     -- =========================================================================
     -- CHECK 3: Required Schemas
     -- =========================================================================
-    LET v_required_schemas ARRAY := ARRAY_CONSTRUCT('RBAC', 'DEVOPS', 'CLONES', 'SECURITY');
+    v_required_schemas := ARRAY_CONSTRUCT('RBAC', 'DEVOPS', 'CLONES', 'SECURITY');
     FOR schema_idx IN 0 TO ARRAY_SIZE(v_required_schemas) - 1 DO
-        LET v_schema_name VARCHAR := v_required_schemas[schema_idx];
+        v_schema_name := v_required_schemas[schema_idx];
         BEGIN
-            LET v_schema_exists INTEGER := 0;
-            SELECT COUNT(*) INTO v_schema_exists
+            v_schema_exists := 0;
+            SELECT COUNT(*) INTO :v_schema_exists
             FROM ADMIN.INFORMATION_SCHEMA.SCHEMATA
-            WHERE SCHEMA_NAME = v_schema_name;
+            WHERE SCHEMA_NAME = :v_schema_name;
             
-            IF v_schema_exists = 1 THEN
+            IF (v_schema_exists = 1) THEN
                 v_checks := ARRAY_APPEND(v_checks, OBJECT_CONSTRUCT(
                     'check', 'SCHEMA_' || v_schema_name,
                     'status', 'PASS',
@@ -1138,16 +1201,16 @@ BEGIN
     -- =========================================================================
     -- CHECK 4: System Roles
     -- =========================================================================
-    LET v_system_roles ARRAY := ARRAY_CONSTRUCT('SRS_ACCOUNT_ADMIN', 'SRS_SECURITY_ADMIN', 'SRS_USER_ADMIN', 'SRS_SYSTEM_ADMIN', 'SRS_DEVOPS');
+    v_system_roles := ARRAY_CONSTRUCT('SRS_ACCOUNT_ADMIN', 'SRS_SECURITY_ADMIN', 'SRS_USER_ADMIN', 'SRS_SYSTEM_ADMIN', 'SRS_DEVOPS');
     FOR role_idx IN 0 TO ARRAY_SIZE(v_system_roles) - 1 DO
-        LET v_role_name VARCHAR := v_system_roles[role_idx];
+        v_role_name := v_system_roles[role_idx];
         BEGIN
-            LET v_role_exists INTEGER := 0;
-            SELECT COUNT(*) INTO v_role_exists
+            v_role_exists := 0;
+            SELECT COUNT(*) INTO :v_role_exists
             FROM SNOWFLAKE.ACCOUNT_USAGE.ROLES
-            WHERE DELETED_ON IS NULL AND NAME = v_role_name;
+            WHERE DELETED_ON IS NULL AND NAME = :v_role_name;
             
-            IF v_role_exists = 1 THEN
+            IF (v_role_exists = 1) THEN
                 v_checks := ARRAY_APPEND(v_checks, OBJECT_CONSTRUCT(
                     'check', 'ROLE_' || v_role_name,
                     'status', 'PASS',
@@ -1178,23 +1241,23 @@ BEGIN
     -- =========================================================================
     -- CHECK 5: Functional Roles (Sample Check)
     -- =========================================================================
-    LET v_environments ARRAY := ARRAY_CONSTRUCT('DEV', 'TST', 'UAT', 'PPE', 'PRD');
+    v_environments := ARRAY_CONSTRUCT('DEV', 'TST', 'UAT', 'PPE', 'PRD');
     FOR env_idx IN 0 TO ARRAY_SIZE(v_environments) - 1 DO
-        LET v_env VARCHAR := v_environments[env_idx];
+        v_env := v_environments[env_idx];
         BEGIN
-            LET v_func_role_count INTEGER := 0;
-            SELECT COUNT(*) INTO v_func_role_count
+            v_func_role_count := 0;
+            SELECT COUNT(*) INTO :v_func_role_count
             FROM SNOWFLAKE.ACCOUNT_USAGE.ROLES
-            WHERE DELETED_ON IS NULL AND NAME LIKE 'SRF_' || v_env || '_%';
+            WHERE DELETED_ON IS NULL AND NAME LIKE ('SRF_' || :v_env || '_%');
             
-            IF v_func_role_count >= 6 THEN
+            IF (v_func_role_count >= 6) THEN
                 v_checks := ARRAY_APPEND(v_checks, OBJECT_CONSTRUCT(
                     'check', 'FUNCTIONAL_ROLES_' || v_env,
                     'status', 'PASS',
                     'message', v_env || ': ' || v_func_role_count::VARCHAR || ' functional roles configured'
                 ));
                 v_passed := v_passed + 1;
-            ELSEIF v_func_role_count > 0 THEN
+            ELSEIF (v_func_role_count > 0) THEN
                 v_checks := ARRAY_APPEND(v_checks, OBJECT_CONSTRUCT(
                     'check', 'FUNCTIONAL_ROLES_' || v_env,
                     'status', 'WARNING',
@@ -1225,7 +1288,7 @@ BEGIN
     -- =========================================================================
     -- CHECK 6: Procedure Deployment Status
     -- =========================================================================
-    LET v_schema_proc_checks ARRAY := ARRAY_CONSTRUCT(
+    v_schema_proc_checks := ARRAY_CONSTRUCT(
         OBJECT_CONSTRUCT('schema', 'RBAC', 'min_procs', 10),
         OBJECT_CONSTRUCT('schema', 'DEVOPS', 'min_procs', 5),
         OBJECT_CONSTRUCT('schema', 'CLONES', 'min_procs', 5),
@@ -1233,24 +1296,24 @@ BEGIN
     );
     
     FOR check_idx IN 0 TO ARRAY_SIZE(v_schema_proc_checks) - 1 DO
-        LET v_check_obj OBJECT := v_schema_proc_checks[check_idx];
-        LET v_check_schema VARCHAR := v_check_obj:schema::VARCHAR;
-        LET v_min_procs INTEGER := v_check_obj:min_procs::INTEGER;
+        v_check_obj := v_schema_proc_checks[check_idx];
+        v_check_schema := v_check_obj:schema::VARCHAR;
+        v_min_procs := v_check_obj:min_procs::INTEGER;
         
         BEGIN
-            LET v_proc_count INTEGER := 0;
-            SELECT COUNT(*) INTO v_proc_count
+            v_proc_count := 0;
+            SELECT COUNT(*) INTO :v_proc_count
             FROM ADMIN.INFORMATION_SCHEMA.PROCEDURES
-            WHERE PROCEDURE_SCHEMA = v_check_schema;
+            WHERE PROCEDURE_SCHEMA = :v_check_schema;
             
-            IF v_proc_count >= v_min_procs THEN
+            IF (v_proc_count >= v_min_procs) THEN
                 v_checks := ARRAY_APPEND(v_checks, OBJECT_CONSTRUCT(
                     'check', 'PROCEDURES_' || v_check_schema,
                     'status', 'PASS',
                     'message', 'ADMIN.' || v_check_schema || ': ' || v_proc_count::VARCHAR || ' procedures deployed'
                 ));
                 v_passed := v_passed + 1;
-            ELSEIF v_proc_count > 0 THEN
+            ELSEIF (v_proc_count > 0) THEN
                 v_checks := ARRAY_APPEND(v_checks, OBJECT_CONSTRUCT(
                     'check', 'PROCEDURES_' || v_check_schema,
                     'status', 'WARNING',
@@ -1283,7 +1346,7 @@ BEGIN
     -- CHECK 7: Key Grants Verification
     -- =========================================================================
     BEGIN
-        LET v_public_grant INTEGER := 0;
+        v_public_grant := 0;
         SELECT COUNT(*) INTO v_public_grant
         FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES
         WHERE DELETED_ON IS NULL
@@ -1291,7 +1354,7 @@ BEGIN
           AND NAME = 'ADMIN'
           AND PRIVILEGE = 'USAGE';
         
-        IF v_public_grant > 0 THEN
+        IF (v_public_grant > 0) THEN
             v_checks := ARRAY_APPEND(v_checks, OBJECT_CONSTRUCT(
                 'check', 'GRANT_PUBLIC_ADMIN',
                 'status', 'PASS',
@@ -1320,10 +1383,10 @@ BEGIN
     -- =========================================================================
     -- Return Results
     -- =========================================================================
-    LET v_overall_status VARCHAR := 'HEALTHY';
-    IF v_failed > 0 THEN
+    v_overall_status := 'HEALTHY';
+    IF (v_failed > 0) THEN
         v_overall_status := 'CRITICAL';
-    ELSEIF v_warnings > 0 THEN
+    ELSEIF (v_warnings > 0) THEN
         v_overall_status := 'WARNING';
     END IF;
     
@@ -1355,6 +1418,8 @@ EXCEPTION
         );
 END;
 $$;
+
+
 
 -- Grant execute on validation procedure
 -- GRANT USAGE ON PROCEDURE RBAC_VALIDATE_CONFIG() TO ROLE SRS_SYSTEM_ADMIN;

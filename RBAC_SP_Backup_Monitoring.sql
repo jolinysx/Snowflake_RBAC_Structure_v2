@@ -50,9 +50,9 @@ DECLARE
     v_expiring_soon INTEGER;
     v_by_type VARIANT;
     v_by_tag VARIANT;
-    v_recent_backups ARRAY;
-    v_recent_restores ARRAY;
-    v_policy_status ARRAY;
+    v_recent_backups VARIANT;
+    v_recent_restores VARIANT;
+    v_policy_status VARIANT;
 BEGIN
     -- Count backups
     SELECT 
@@ -86,11 +86,10 @@ BEGIN
         'tag', BACKUP_TAG,
         'timestamp', BACKUP_TIMESTAMP,
         'expires_at', EXPIRES_AT
-    )) INTO v_recent_backups
+    )) WITHIN GROUP (ORDER BY BACKUP_TIMESTAMP DESC) INTO v_recent_backups
     FROM (
         SELECT * FROM BACKUP_CATALOG 
         WHERE STATUS = 'ACTIVE'
-        ORDER BY BACKUP_TIMESTAMP DESC
         LIMIT 10
     );
     
@@ -104,10 +103,9 @@ BEGIN
         'status', STATUS,
         'restored_by', RESTORED_BY,
         'timestamp', STARTED_AT
-    )) INTO v_recent_restores
+    )) WITHIN GROUP (ORDER BY STARTED_AT DESC) INTO v_recent_restores
     FROM (
         SELECT * FROM BACKUP_RESTORE_HISTORY
-        ORDER BY STARTED_AT DESC
         LIMIT 10
     );
     
@@ -154,17 +152,17 @@ $$;
  * RBAC STORED PROCEDURE: Backup Storage Dashboard
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_BACKUP_STORAGE_DASHBOARD()
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.BACKUP.RBAC_BACKUP_STORAGE_DASHBOARD()
 RETURNS VARIANT
 LANGUAGE SQL
 EXECUTE AS CALLER
 AS
 $$
 DECLARE
-    v_by_database ARRAY;
-    v_by_type ARRAY;
-    v_by_tag ARRAY;
-    v_largest_backups ARRAY;
+    v_by_database VARIANT;
+    v_by_type VARIANT;
+    v_by_tag VARIANT;
+    v_largest_backups VARIANT;
     v_total_size NUMBER;
     v_estimated_cost NUMBER;
 BEGIN
@@ -173,13 +171,12 @@ BEGIN
         'database', SOURCE_DATABASE,
         'backup_count', CNT,
         'total_size_gb', ROUND(TOTAL_SIZE / 1024 / 1024 / 1024, 2)
-    )) INTO v_by_database
+    )) WITHIN GROUP (ORDER BY TOTAL_SIZE DESC) INTO v_by_database
     FROM (
         SELECT SOURCE_DATABASE, COUNT(*) AS CNT, SUM(COALESCE(SIZE_BYTES, 0)) AS TOTAL_SIZE
         FROM BACKUP_CATALOG
         WHERE STATUS = 'ACTIVE'
         GROUP BY SOURCE_DATABASE
-        ORDER BY TOTAL_SIZE DESC
     );
     
     -- Storage by backup type
@@ -215,11 +212,10 @@ BEGIN
         'size_gb', ROUND(SIZE_BYTES / 1024 / 1024 / 1024, 2),
         'tag', BACKUP_TAG,
         'expires_at', EXPIRES_AT
-    )) INTO v_largest_backups
+    )) WITHIN GROUP (ORDER BY SIZE_BYTES DESC) INTO v_largest_backups
     FROM (
         SELECT * FROM BACKUP_CATALOG
         WHERE STATUS = 'ACTIVE' AND SIZE_BYTES IS NOT NULL
-        ORDER BY SIZE_BYTES DESC
         LIMIT 10
     );
     
@@ -264,9 +260,9 @@ AS
 $$
 DECLARE
     v_coverage_summary VARIANT;
-    v_by_database ARRAY;
-    v_low_retention ARRAY;
-    v_no_retention ARRAY;
+    v_by_database VARIANT;
+    v_low_retention VARIANT;
+    v_no_retention VARIANT;
     v_recommendations ARRAY := ARRAY_CONSTRUCT();
 BEGIN
     -- Coverage by database
@@ -279,7 +275,7 @@ BEGIN
             WHEN RETENTION_TIME >= 1 THEN 'MINIMAL'
             ELSE 'NONE'
         END
-    )) INTO v_by_database
+    )) WITHIN GROUP (ORDER BY DATABASE_NAME) INTO v_by_database
     FROM (
         SELECT 
             d.DATABASE_NAME,
@@ -292,7 +288,6 @@ BEGIN
           AND d.DATABASE_NAME NOT IN ('SNOWFLAKE', 'SNOWFLAKE_SAMPLE_DATA')
           AND (P_DATABASE IS NULL OR d.DATABASE_NAME = P_DATABASE)
         GROUP BY d.DATABASE_NAME, d.RETENTION_TIME
-        ORDER BY d.DATABASE_NAME
     );
     
     -- Tables with low retention (1 day)
@@ -323,7 +318,7 @@ BEGIN
     LIMIT 50;
     
     -- Generate recommendations
-    IF ARRAY_SIZE(COALESCE(v_no_retention, ARRAY_CONSTRUCT())) > 0 THEN
+    IF (ARRAY_SIZE(COALESCE(v_no_retention, ARRAY_CONSTRUCT())) > 0) THEN
         v_recommendations := ARRAY_APPEND(v_recommendations, OBJECT_CONSTRUCT(
             'priority', 'HIGH',
             'issue', 'Tables with zero Time Travel retention',
@@ -332,7 +327,7 @@ BEGIN
         ));
     END IF;
     
-    IF ARRAY_SIZE(COALESCE(v_low_retention, ARRAY_CONSTRUCT())) > 10 THEN
+    IF (ARRAY_SIZE(COALESCE(v_low_retention, ARRAY_CONSTRUCT())) > 10) THEN
         v_recommendations := ARRAY_APPEND(v_recommendations, OBJECT_CONSTRUCT(
             'priority', 'MEDIUM',
             'issue', 'Many tables with minimal Time Travel (1 day)',
@@ -379,8 +374,8 @@ DECLARE
     v_policy_coverage INTEGER;
     v_recent_backup_count INTEGER;
     v_failed_jobs INTEGER;
-    v_databases_without_backup ARRAY;
-    v_overdue_policies ARRAY;
+    v_databases_without_backup VARIANT;
+    v_overdue_policies VARIANT;
 BEGIN
     -- Check 1: Backup policy coverage (25 points)
     SELECT COUNT(*) INTO v_policy_coverage FROM BACKUP_POLICIES WHERE IS_ACTIVE = TRUE;
@@ -494,7 +489,7 @@ $$;
  * RBAC STORED PROCEDURE: Backup Health Check
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_BACKUP_HEALTH_CHECK()
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.BACKUP.RBAC_BACKUP_HEALTH_CHECK()
 RETURNS VARIANT
 LANGUAGE SQL
 EXECUTE AS CALLER
@@ -502,15 +497,15 @@ AS
 $$
 DECLARE
     v_health_status VARCHAR := 'HEALTHY';
-    v_issues ARRAY := ARRAY_CONSTRUCT();
-    v_warnings ARRAY := ARRAY_CONSTRUCT();
+    v_issues VARIANT := ARRAY_CONSTRUCT();
+    v_warnings VARIANT := ARRAY_CONSTRUCT();
     v_metrics VARIANT;
 BEGIN
     -- Check for failed jobs in last 24 hours
     FOR job_rec IN (
         SELECT * FROM BACKUP_JOBS 
         WHERE STATUS = 'FAILED' AND STARTED_AT > DATEADD(HOUR, -24, CURRENT_TIMESTAMP())
-    ) DO
+    ) LOOP
         v_health_status := 'DEGRADED';
         v_issues := ARRAY_APPEND(v_issues, OBJECT_CONSTRUCT(
             'type', 'FAILED_JOB',
@@ -518,7 +513,7 @@ BEGIN
             'error', job_rec.ERROR_MESSAGE,
             'timestamp', job_rec.STARTED_AT
         ));
-    END FOR;
+    END LOOP;
     
     -- Check for overdue policies
     FOR policy_rec IN (
@@ -528,7 +523,7 @@ BEGIN
               (BACKUP_FREQUENCY = 'HOURLY' AND LAST_BACKUP_AT < DATEADD(HOUR, -2, CURRENT_TIMESTAMP()))
               OR (BACKUP_FREQUENCY = 'DAILY' AND LAST_BACKUP_AT < DATEADD(DAY, -2, CURRENT_TIMESTAMP()))
           )
-    ) DO
+    ) LOOP
         v_health_status := CASE WHEN v_health_status = 'HEALTHY' THEN 'WARNING' ELSE v_health_status END;
         v_warnings := ARRAY_APPEND(v_warnings, OBJECT_CONSTRUCT(
             'type', 'OVERDUE_POLICY',
@@ -536,7 +531,7 @@ BEGIN
             'frequency', policy_rec.BACKUP_FREQUENCY,
             'last_backup', policy_rec.LAST_BACKUP_AT
         ));
-    END FOR;
+    END LOOP;
     
     -- Check for expiring backups
     LET v_expiring_count INTEGER := 0;
@@ -545,7 +540,7 @@ BEGIN
     WHERE STATUS = 'ACTIVE' 
       AND EXPIRES_AT BETWEEN CURRENT_TIMESTAMP() AND DATEADD(DAY, 3, CURRENT_TIMESTAMP());
     
-    IF v_expiring_count > 0 THEN
+    IF (v_expiring_count > 0) THEN
         v_warnings := ARRAY_APPEND(v_warnings, OBJECT_CONSTRUCT(
             'type', 'EXPIRING_BACKUPS',
             'count', v_expiring_count,
@@ -554,13 +549,17 @@ BEGIN
     END IF;
     
     -- Get key metrics
-    SELECT OBJECT_CONSTRUCT(
-        'active_backups', COUNT_IF(STATUS = 'ACTIVE'),
-        'active_policies', (SELECT COUNT(*) FROM BACKUP_POLICIES WHERE IS_ACTIVE = TRUE),
-        'jobs_last_24h', (SELECT COUNT(*) FROM BACKUP_JOBS WHERE STARTED_AT > DATEADD(HOUR, -24, CURRENT_TIMESTAMP())),
-        'restores_last_7d', (SELECT COUNT(*) FROM BACKUP_RESTORE_HISTORY WHERE STARTED_AT > DATEADD(DAY, -7, CURRENT_TIMESTAMP()))
-    ) INTO v_metrics
-    FROM BACKUP_CATALOG;
+    LET v_active_backups INTEGER := (SELECT COUNT_IF(STATUS = 'ACTIVE') FROM BACKUP_CATALOG);
+    LET v_active_policies INTEGER := (SELECT COUNT(*) FROM BACKUP_POLICIES WHERE IS_ACTIVE = TRUE);
+    LET v_jobs_24h INTEGER := (SELECT COUNT(*) FROM BACKUP_JOBS WHERE STARTED_AT > DATEADD(HOUR, -24, CURRENT_TIMESTAMP()));
+    LET v_restores_7d INTEGER := (SELECT COUNT(*) FROM BACKUP_RESTORE_HISTORY WHERE STARTED_AT > DATEADD(DAY, -7, CURRENT_TIMESTAMP()));
+    
+    v_metrics := OBJECT_CONSTRUCT(
+        'active_backups', v_active_backups,
+        'active_policies', v_active_policies,
+        'jobs_last_24h', v_jobs_24h,
+        'restores_last_7d', v_restores_7d
+    );
     
     RETURN OBJECT_CONSTRUCT(
         'dashboard', 'BACKUP_HEALTH_CHECK',
@@ -586,7 +585,7 @@ $$;
  * RBAC STORED PROCEDURE: Backup Trends Dashboard
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_BACKUP_TRENDS_DASHBOARD(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.BACKUP.RBAC_BACKUP_TRENDS_DASHBOARD(
     P_DAYS INTEGER DEFAULT 30
 )
 RETURNS VARIANT
@@ -595,8 +594,8 @@ EXECUTE AS CALLER
 AS
 $$
 DECLARE
-    v_daily_backups ARRAY;
-    v_daily_restores ARRAY;
+    v_daily_backups VARIANT;
+    v_daily_restores VARIANT;
     v_by_day_of_week VARIANT;
     v_growth_trend VARIANT;
 BEGIN
@@ -605,16 +604,15 @@ BEGIN
         'date', BACKUP_DATE,
         'count', CNT,
         'total_size_gb', SIZE_GB
-    )) INTO v_daily_backups
+    )) WITHIN GROUP (ORDER BY BACKUP_DATE) INTO v_daily_backups
     FROM (
         SELECT 
-            BACKUP_TIMESTAMP::DATE AS BACKUP_DATE,
+            TO_DATE(BACKUP_TIMESTAMP) AS BACKUP_DATE,
             COUNT(*) AS CNT,
             ROUND(SUM(COALESCE(SIZE_BYTES, 0)) / 1024 / 1024 / 1024, 2) AS SIZE_GB
         FROM BACKUP_CATALOG
         WHERE BACKUP_TIMESTAMP > DATEADD(DAY, -P_DAYS, CURRENT_TIMESTAMP())
         GROUP BY BACKUP_DATE
-        ORDER BY BACKUP_DATE
     );
     
     -- Daily restore counts
@@ -622,16 +620,15 @@ BEGIN
         'date', RESTORE_DATE,
         'count', CNT,
         'success_count', SUCCESS_CNT
-    )) INTO v_daily_restores
+    )) WITHIN GROUP (ORDER BY RESTORE_DATE) INTO v_daily_restores
     FROM (
         SELECT 
-            STARTED_AT::DATE AS RESTORE_DATE,
+            TO_DATE(STARTED_AT) AS RESTORE_DATE,
             COUNT(*) AS CNT,
             COUNT_IF(STATUS = 'SUCCESS') AS SUCCESS_CNT
         FROM BACKUP_RESTORE_HISTORY
         WHERE STARTED_AT > DATEADD(DAY, -P_DAYS, CURRENT_TIMESTAMP())
         GROUP BY RESTORE_DATE
-        ORDER BY RESTORE_DATE
     );
     
     -- Backups by day of week
@@ -644,11 +641,15 @@ BEGIN
     );
     
     -- Growth trend
-    SELECT OBJECT_CONSTRUCT(
-        'backups_first_half', (SELECT COUNT(*) FROM BACKUP_CATALOG WHERE BACKUP_TIMESTAMP BETWEEN DATEADD(DAY, -P_DAYS, CURRENT_TIMESTAMP()) AND DATEADD(DAY, -P_DAYS/2, CURRENT_TIMESTAMP())),
-        'backups_second_half', (SELECT COUNT(*) FROM BACKUP_CATALOG WHERE BACKUP_TIMESTAMP > DATEADD(DAY, -P_DAYS/2, CURRENT_TIMESTAMP())),
-        'total_period_backups', (SELECT COUNT(*) FROM BACKUP_CATALOG WHERE BACKUP_TIMESTAMP > DATEADD(DAY, -P_DAYS, CURRENT_TIMESTAMP()))
-    ) INTO v_growth_trend;
+    LET v_backups_first_half INTEGER := (SELECT COUNT(*) FROM BACKUP_CATALOG WHERE BACKUP_TIMESTAMP BETWEEN DATEADD(DAY, -P_DAYS, CURRENT_TIMESTAMP()) AND DATEADD(DAY, -P_DAYS/2, CURRENT_TIMESTAMP()));
+    LET v_backups_second_half INTEGER := (SELECT COUNT(*) FROM BACKUP_CATALOG WHERE BACKUP_TIMESTAMP > DATEADD(DAY, -P_DAYS/2, CURRENT_TIMESTAMP()));
+    LET v_total_period_backups INTEGER := (SELECT COUNT(*) FROM BACKUP_CATALOG WHERE BACKUP_TIMESTAMP > DATEADD(DAY, -P_DAYS, CURRENT_TIMESTAMP()));
+    
+    v_growth_trend := OBJECT_CONSTRUCT(
+        'backups_first_half', v_backups_first_half,
+        'backups_second_half', v_backups_second_half,
+        'total_period_backups', v_total_period_backups
+    );
     
     RETURN OBJECT_CONSTRUCT(
         'dashboard', 'BACKUP_TRENDS',
@@ -685,27 +686,27 @@ DECLARE
     v_alerts ARRAY := ARRAY_CONSTRUCT();
 BEGIN
     -- Gather dashboards
-    CALL RBAC_BACKUP_STATUS_DASHBOARD() INTO v_status;
-    CALL RBAC_BACKUP_HEALTH_CHECK() INTO v_health;
-    CALL RBAC_BACKUP_COMPLIANCE_REPORT() INTO v_compliance;
-    CALL RBAC_BACKUP_STORAGE_DASHBOARD() INTO v_storage;
+    CALL ADMIN.BACKUP.RBAC_BACKUP_STATUS_DASHBOARD() INTO v_status;
+    CALL ADMIN.BACKUP.RBAC_BACKUP_HEALTH_CHECK() INTO v_health;
+    CALL ADMIN.BACKUP.RBAC_BACKUP_COMPLIANCE_REPORT() INTO v_compliance;
+    CALL ADMIN.BACKUP.RBAC_BACKUP_STORAGE_DASHBOARD() INTO v_storage;
     
     -- Determine overall health
-    IF v_health:health_status = 'DEGRADED' THEN
+    IF (v_health:health_status = 'DEGRADED') THEN
         v_overall_health := 'CRITICAL';
         v_alerts := ARRAY_APPEND(v_alerts, OBJECT_CONSTRUCT(
             'level', 'CRITICAL',
             'message', 'Backup system has failures - immediate attention required',
             'source', 'HEALTH_CHECK'
         ));
-    ELSEIF v_compliance:overall:status = 'NON_COMPLIANT' THEN
+    ELSEIF (v_compliance:overall:status = 'NON_COMPLIANT') THEN
         v_overall_health := 'WARNING';
         v_alerts := ARRAY_APPEND(v_alerts, OBJECT_CONSTRUCT(
             'level', 'WARNING',
             'message', 'Backup compliance score below threshold',
             'source', 'COMPLIANCE'
         ));
-    ELSEIF v_health:health_status = 'WARNING' THEN
+    ELSEIF (v_health:health_status = 'WARNING') THEN
         v_overall_health := 'ATTENTION';
         v_alerts := ARRAY_APPEND(v_alerts, OBJECT_CONSTRUCT(
             'level', 'INFO',
@@ -717,7 +718,7 @@ BEGIN
     END IF;
     
     -- Add expiring backup alert
-    IF v_status:summary:expiring_in_7_days > 0 THEN
+    IF (v_status:summary:expiring_in_7_days > 0) THEN
         v_alerts := ARRAY_APPEND(v_alerts, OBJECT_CONSTRUCT(
             'level', 'INFO',
             'message', v_status:summary:expiring_in_7_days || ' backups expiring in 7 days',
@@ -750,17 +751,17 @@ $$;
 -- SECTION 8: GRANT PERMISSIONS
 -- #############################################################################
 
-GRANT USAGE ON PROCEDURE RBAC_BACKUP_STATUS_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_BACKUP_STORAGE_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_TIME_TRAVEL_COVERAGE_DASHBOARD(VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_BACKUP_COMPLIANCE_REPORT() TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_BACKUP_HEALTH_CHECK() TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_BACKUP_TRENDS_DASHBOARD(INTEGER) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_BACKUP_MONITORING_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_BACKUP_STATUS_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_BACKUP_STORAGE_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_TIME_TRAVEL_COVERAGE_DASHBOARD(VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_BACKUP_COMPLIANCE_REPORT() TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_BACKUP_HEALTH_CHECK() TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_BACKUP_TRENDS_DASHBOARD(INTEGER) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_BACKUP_MONITORING_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
 
 -- DBAdmins can view dashboards
-GRANT USAGE ON PROCEDURE RBAC_BACKUP_STATUS_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_BACKUP_STORAGE_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_TIME_TRAVEL_COVERAGE_DASHBOARD(VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_BACKUP_HEALTH_CHECK() TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_BACKUP_MONITORING_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_BACKUP_STATUS_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_BACKUP_STORAGE_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_TIME_TRAVEL_COVERAGE_DASHBOARD(VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_BACKUP_HEALTH_CHECK() TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.BACKUP.RBAC_BACKUP_MONITORING_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;

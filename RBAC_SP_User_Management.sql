@@ -92,6 +92,8 @@ DECLARE
     v_service_role VARCHAR;
     v_sql VARCHAR;
     v_actions ARRAY := ARRAY_CONSTRUCT();
+    v_account_exists BOOLEAN;
+    v_role_exists BOOLEAN;
 BEGIN
     -- =========================================================================
     -- VALIDATION
@@ -132,12 +134,10 @@ BEGIN
     END IF;
     
     -- Check if account already exists
-    LET v_account_exists BOOLEAN := (
-        SELECT COUNT(*) > 0
-        FROM SNOWFLAKE.ACCOUNT_USAGE.USERS
-        WHERE NAME = UPPER(:P_ACCOUNT_NAME)
-          AND DELETED_ON IS NULL
-    );
+    SELECT COUNT(*) > 0 INTO :v_account_exists
+    FROM SNOWFLAKE.ACCOUNT_USAGE.USERS
+    WHERE NAME = UPPER(:P_ACCOUNT_NAME)
+      AND DELETED_ON IS NULL;
     
     IF v_account_exists THEN
         RETURN OBJECT_CONSTRUCT(
@@ -152,12 +152,10 @@ BEGIN
     v_service_role := 'SRW_' || P_ENVIRONMENT || '_' || UPPER(P_DOMAIN) || '_' || P_CAPABILITY_LEVEL;
     
     -- Check if service role exists
-    LET v_role_exists BOOLEAN := (
-        SELECT COUNT(*) > 0
-        FROM SNOWFLAKE.ACCOUNT_USAGE.ROLES
-        WHERE NAME = :v_service_role
-          AND DELETED_ON IS NULL
-    );
+    SELECT COUNT(*) > 0 INTO :v_role_exists
+    FROM SNOWFLAKE.ACCOUNT_USAGE.ROLES
+    WHERE NAME = :v_service_role
+      AND DELETED_ON IS NULL;
     
     IF NOT v_role_exists THEN
         RETURN OBJECT_CONSTRUCT(
@@ -312,18 +310,20 @@ DECLARE
     v_sql VARCHAR;
     v_actions ARRAY := ARRAY_CONSTRUCT();
     v_user_type VARCHAR;
+    v_access_role_exists BOOLEAN;
+    i INTEGER;
+    v_add_domain VARCHAR;
+    v_add_access_role VARCHAR;
 BEGIN
     -- =========================================================================
     -- VALIDATION
     -- =========================================================================
     
     -- Check if user exists
-    v_user_type := (
-        SELECT COALESCE(TYPE, 'PERSON')
-        FROM SNOWFLAKE.ACCOUNT_USAGE.USERS
-        WHERE NAME = UPPER(:P_USER_NAME)
-          AND DELETED_ON IS NULL
-    );
+    SELECT COALESCE(TYPE, 'PERSON') INTO :v_user_type
+    FROM SNOWFLAKE.ACCOUNT_USAGE.USERS
+    WHERE NAME = UPPER(:P_USER_NAME)
+      AND DELETED_ON IS NULL;
     
     IF v_user_type IS NULL THEN
         RETURN OBJECT_CONSTRUCT(
@@ -365,12 +365,10 @@ BEGIN
     v_access_role := 'SRA_' || P_ENVIRONMENT || '_' || UPPER(P_DOMAIN) || '_ACCESS';
     
     -- Check if access role exists
-    LET v_access_role_exists BOOLEAN := (
-        SELECT COUNT(*) > 0
-        FROM SNOWFLAKE.ACCOUNT_USAGE.ROLES
-        WHERE NAME = :v_access_role
-          AND DELETED_ON IS NULL
-    );
+    SELECT COUNT(*) > 0 INTO :v_access_role_exists
+    FROM SNOWFLAKE.ACCOUNT_USAGE.ROLES
+    WHERE NAME = :v_access_role
+      AND DELETED_ON IS NULL;
     
     IF NOT v_access_role_exists THEN
         RETURN OBJECT_CONSTRUCT(
@@ -430,8 +428,8 @@ BEGIN
     -- =========================================================================
     IF P_ADDITIONAL_DOMAINS IS NOT NULL AND ARRAY_SIZE(P_ADDITIONAL_DOMAINS) > 0 THEN
         FOR i IN 0 TO ARRAY_SIZE(P_ADDITIONAL_DOMAINS) - 1 DO
-            LET v_add_domain VARCHAR := P_ADDITIONAL_DOMAINS[i]::VARCHAR;
-            LET v_add_access_role VARCHAR := 'SRA_' || P_ENVIRONMENT || '_' || UPPER(v_add_domain) || '_ACCESS';
+            v_add_domain := P_ADDITIONAL_DOMAINS[i]::VARCHAR;
+            v_add_access_role := 'SRA_' || P_ENVIRONMENT || '_' || UPPER(v_add_domain) || '_ACCESS';
             
             v_sql := 'GRANT ROLE ' || v_add_access_role || ' TO USER ' || P_USER_NAME;
             BEGIN

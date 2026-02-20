@@ -377,7 +377,7 @@ $$;
  * Purpose: Detect discrepancies between expected RBAC config and actual state
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_CONFIG_MISALIGNMENT_DASHBOARD()
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.SECURITY.RBAC_CONFIG_MISALIGNMENT_DASHBOARD()
 RETURNS VARIANT
 LANGUAGE SQL
 EXECUTE AS CALLER
@@ -487,10 +487,10 @@ $$;
 
 CREATE OR REPLACE SECURE PROCEDURE ADMIN.SECURITY.RBAC_CREATE_SECURITY_EXCEPTION(
     P_EXCEPTION_TYPE VARCHAR,
+    P_REASON TEXT,
     P_USER_NAME VARCHAR DEFAULT NULL,
     P_ROLE_NAME VARCHAR DEFAULT NULL,
     P_ENVIRONMENT VARCHAR DEFAULT NULL,
-    P_REASON TEXT,
     P_EXPIRES_IN_DAYS INTEGER DEFAULT 30,
     P_TICKET_NUMBER VARCHAR DEFAULT NULL
 )
@@ -532,7 +532,7 @@ $$;
  * RBAC STORED PROCEDURE: Security Exceptions Dashboard
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_SECURITY_EXCEPTIONS_DASHBOARD()
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.SECURITY.RBAC_SECURITY_EXCEPTIONS_DASHBOARD()
 RETURNS VARIANT
 LANGUAGE SQL
 EXECUTE AS CALLER
@@ -610,7 +610,7 @@ $$;
  * RBAC STORED PROCEDURE: Create Security Alert
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_CREATE_SECURITY_ALERT(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.SECURITY.RBAC_CREATE_SECURITY_ALERT(
     P_ALERT_TYPE VARCHAR,
     P_SEVERITY VARCHAR,
     P_TITLE VARCHAR,
@@ -645,7 +645,7 @@ $$;
  * RBAC STORED PROCEDURE: Security Alerts Dashboard
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_SECURITY_ALERTS_DASHBOARD()
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.SECURITY.RBAC_SECURITY_ALERTS_DASHBOARD()
 RETURNS VARIANT
 LANGUAGE SQL
 EXECUTE AS CALLER
@@ -737,45 +737,62 @@ $$;
  * RBAC STORED PROCEDURE: Acknowledge/Resolve Alert
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_RESOLVE_SECURITY_ALERT(
+CREATE OR REPLACE PROCEDURE ADMIN.SECURITY.RBAC_RESOLVE_SECURITY_ALERT(
     P_ALERT_ID VARCHAR,
     P_ACTION VARCHAR,
-    P_NOTES TEXT DEFAULT NULL
+    P_NOTES TEXT
 )
 RETURNS VARIANT
-LANGUAGE SQL
+LANGUAGE JAVASCRIPT
 EXECUTE AS CALLER
 AS
 $$
-BEGIN
-    IF P_ACTION = 'ACKNOWLEDGE' THEN
-        UPDATE RBAC_SECURITY_ALERTS
-        SET STATUS = 'ACKNOWLEDGED',
-            ACKNOWLEDGED_BY = CURRENT_USER(),
-            ACKNOWLEDGED_AT = CURRENT_TIMESTAMP()
-        WHERE ALERT_ID = P_ALERT_ID;
-    ELSEIF P_ACTION = 'RESOLVE' THEN
-        UPDATE RBAC_SECURITY_ALERTS
-        SET STATUS = 'RESOLVED',
-            RESOLVED_BY = CURRENT_USER(),
-            RESOLVED_AT = CURRENT_TIMESTAMP(),
-            RESOLUTION_NOTES = P_NOTES
-        WHERE ALERT_ID = P_ALERT_ID;
-    ELSE
-        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Invalid action. Use ACKNOWLEDGE or RESOLVE');
-    END IF;
+    // Validate action
+    if (P_ACTION !== 'ACKNOWLEDGE' && P_ACTION !== 'RESOLVE') {
+        return {
+            status: 'ERROR',
+            message: 'Invalid action. Use ACKNOWLEDGE or RESOLVE'
+        };
+    }
     
-    RETURN OBJECT_CONSTRUCT(
-        'status', 'SUCCESS',
-        'alert_id', P_ALERT_ID,
-        'action', P_ACTION,
-        'performed_by', CURRENT_USER()
-    );
-
-EXCEPTION
-    WHEN OTHER THEN
-        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', SQLERRM);
-END;
+    // Update based on action
+    if (P_ACTION === 'ACKNOWLEDGE') {
+        var stmt = snowflake.createStatement({
+            sqlText: `UPDATE RBAC_SECURITY_ALERTS
+                      SET STATUS = 'ACKNOWLEDGED',
+                          ACKNOWLEDGED_BY = CURRENT_USER(),
+                          ACKNOWLEDGED_AT = CURRENT_TIMESTAMP()
+                      WHERE ALERT_ID = ?`,
+            binds: [P_ALERT_ID]
+        });
+        stmt.execute();
+    } else {
+        var stmt = snowflake.createStatement({
+            sqlText: `UPDATE RBAC_SECURITY_ALERTS
+                      SET STATUS = 'RESOLVED',
+                          RESOLVED_BY = CURRENT_USER(),
+                          RESOLVED_AT = CURRENT_TIMESTAMP(),
+                          RESOLUTION_NOTES = ?
+                      WHERE ALERT_ID = ?`,
+            binds: [P_NOTES, P_ALERT_ID]
+        });
+        stmt.execute();
+    }
+    
+    // Get current user
+    var userStmt = snowflake.createStatement({
+        sqlText: "SELECT CURRENT_USER()"
+    });
+    var userRs = userStmt.execute();
+    userRs.next();
+    var currentUser = userRs.getColumnValue(1);
+    
+    return {
+        status: 'SUCCESS',
+        alert_id: P_ALERT_ID,
+        action: P_ACTION,
+        performed_by: currentUser
+    };
 $$;
 
 -- #############################################################################
@@ -786,64 +803,71 @@ $$;
  * RBAC STORED PROCEDURE: Security Monitoring Dashboard (Unified)
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE ADMIN.SECURITY.RBAC_SECURITY_MONITORING_DASHBOARD()
+CREATE OR REPLACE PROCEDURE ADMIN.SECURITY.RBAC_SECURITY_MONITORING_DASHBOARD()
 RETURNS VARIANT
-LANGUAGE SQL
+LANGUAGE JAVASCRIPT
 EXECUTE AS CALLER
 AS
 $$
-DECLARE
-    v_role_dashboard VARIANT;
-    v_anomaly_dashboard VARIANT;
-    v_misalignment_dashboard VARIANT;
-    v_alerts_dashboard VARIANT;
-    v_exceptions_dashboard VARIANT;
-    v_overall_health VARCHAR;
-    v_critical_issues ARRAY := ARRAY_CONSTRUCT();
-BEGIN
-    -- Gather all dashboards
-    CALL RBAC_ROLE_ASSIGNMENT_DASHBOARD() INTO v_role_dashboard;
-    CALL RBAC_ACCESS_ANOMALY_DASHBOARD(7) INTO v_anomaly_dashboard;
-    CALL RBAC_CONFIG_MISALIGNMENT_DASHBOARD() INTO v_misalignment_dashboard;
-    CALL RBAC_SECURITY_ALERTS_DASHBOARD() INTO v_alerts_dashboard;
-    CALL RBAC_SECURITY_EXCEPTIONS_DASHBOARD() INTO v_exceptions_dashboard;
+    // Gather all dashboards
+    var roleDashboard, anomalyDashboard, misalignmentDashboard, alertsDashboard, exceptionsDashboard;
     
-    -- Determine overall health
-    IF v_alerts_dashboard:status = 'CRITICAL' THEN
-        v_overall_health := 'CRITICAL';
-        v_critical_issues := ARRAY_APPEND(v_critical_issues, 'Critical security alerts detected');
-    ELSEIF v_misalignment_dashboard:health_status = 'CRITICAL' THEN
-        v_overall_health := 'CRITICAL';
-        v_critical_issues := ARRAY_APPEND(v_critical_issues, 'Critical configuration misalignments');
-    ELSEIF v_anomaly_dashboard:risk_level = 'HIGH' THEN
-        v_overall_health := 'WARNING';
-        v_critical_issues := ARRAY_APPEND(v_critical_issues, 'High-risk access anomalies detected');
-    ELSEIF v_alerts_dashboard:status = 'HIGH' OR v_misalignment_dashboard:health_status = 'WARNING' THEN
-        v_overall_health := 'WARNING';
-    ELSE
-        v_overall_health := 'HEALTHY';
-    END IF;
+    var stmt1 = snowflake.createStatement({sqlText: "CALL ADMIN.SECURITY.RBAC_ROLE_ASSIGNMENT_DASHBOARD()"});
+    var rs1 = stmt1.execute(); rs1.next(); roleDashboard = rs1.getColumnValue(1);
     
-    RETURN OBJECT_CONSTRUCT(
-        'dashboard', 'SECURITY_MONITORING_UNIFIED',
-        'generated_at', CURRENT_TIMESTAMP(),
-        'overall_health', v_overall_health,
-        'critical_issues', v_critical_issues,
-        'quick_stats', OBJECT_CONSTRUCT(
-            'total_rbac_roles', v_role_dashboard:summary:total_rbac_roles,
-            'users_with_roles', v_role_dashboard:summary:total_users_with_rbac_roles,
-            'open_alerts', v_alerts_dashboard:summary:total_open,
-            'active_exceptions', v_exceptions_dashboard:summary:total_active,
-            'config_misalignments', v_misalignment_dashboard:summary:total_misalignments,
-            'anomalies_detected', v_anomaly_dashboard:summary:total_anomalies_detected
-        ),
-        'role_assignments', v_role_dashboard,
-        'access_anomalies', v_anomaly_dashboard,
-        'config_misalignments', v_misalignment_dashboard,
-        'security_alerts', v_alerts_dashboard,
-        'security_exceptions', v_exceptions_dashboard
-    );
-END;
+    var stmt2 = snowflake.createStatement({sqlText: "CALL ADMIN.SECURITY.RBAC_ACCESS_ANOMALY_DASHBOARD(7)"});
+    var rs2 = stmt2.execute(); rs2.next(); anomalyDashboard = rs2.getColumnValue(1);
+    
+    var stmt3 = snowflake.createStatement({sqlText: "CALL ADMIN.SECURITY.RBAC_CONFIG_MISALIGNMENT_DASHBOARD()"});
+    var rs3 = stmt3.execute(); rs3.next(); misalignmentDashboard = rs3.getColumnValue(1);
+    
+    var stmt4 = snowflake.createStatement({sqlText: "CALL ADMIN.SECURITY.RBAC_SECURITY_ALERTS_DASHBOARD()"});
+    var rs4 = stmt4.execute(); rs4.next(); alertsDashboard = rs4.getColumnValue(1);
+    
+    var stmt5 = snowflake.createStatement({sqlText: "CALL ADMIN.SECURITY.RBAC_SECURITY_EXCEPTIONS_DASHBOARD()"});
+    var rs5 = stmt5.execute(); rs5.next(); exceptionsDashboard = rs5.getColumnValue(1);
+    
+    // Determine overall health
+    var overallHealth = 'HEALTHY';
+    var criticalIssues = [];
+    
+    if (alertsDashboard && alertsDashboard.status === 'CRITICAL') {
+        overallHealth = 'CRITICAL';
+        criticalIssues.push('Critical security alerts detected');
+    } else if (misalignmentDashboard && misalignmentDashboard.health_status === 'CRITICAL') {
+        overallHealth = 'CRITICAL';
+        criticalIssues.push('Critical configuration misalignments');
+    } else if (anomalyDashboard && anomalyDashboard.risk_level === 'HIGH') {
+        overallHealth = 'WARNING';
+        criticalIssues.push('High-risk access anomalies detected');
+    } else if ((alertsDashboard && alertsDashboard.status === 'HIGH') || 
+               (misalignmentDashboard && misalignmentDashboard.health_status === 'WARNING')) {
+        overallHealth = 'WARNING';
+    }
+    
+    var tsStmt = snowflake.createStatement({sqlText: "SELECT CURRENT_TIMESTAMP()"});
+    var tsRs = tsStmt.execute(); tsRs.next();
+    var currentTimestamp = tsRs.getColumnValue(1);
+    
+    return {
+        dashboard: 'SECURITY_MONITORING_UNIFIED',
+        generated_at: currentTimestamp,
+        overall_health: overallHealth,
+        critical_issues: criticalIssues,
+        quick_stats: {
+            total_rbac_roles: roleDashboard && roleDashboard.summary ? roleDashboard.summary.total_rbac_roles : 0,
+            users_with_roles: roleDashboard && roleDashboard.summary ? roleDashboard.summary.total_users_with_rbac_roles : 0,
+            open_alerts: alertsDashboard && alertsDashboard.summary ? alertsDashboard.summary.total_open : 0,
+            active_exceptions: exceptionsDashboard && exceptionsDashboard.summary ? exceptionsDashboard.summary.total_active : 0,
+            config_misalignments: misalignmentDashboard && misalignmentDashboard.summary ? misalignmentDashboard.summary.total_misalignments : 0,
+            anomalies_detected: anomalyDashboard && anomalyDashboard.summary ? anomalyDashboard.summary.total_anomalies_detected : 0
+        },
+        role_assignments: roleDashboard,
+        access_anomalies: anomalyDashboard,
+        config_misalignments: misalignmentDashboard,
+        security_alerts: alertsDashboard,
+        security_exceptions: exceptionsDashboard
+    };
 $$;
 
 -- #############################################################################
@@ -856,71 +880,90 @@ $$;
  * Purpose: Automated security scan that creates alerts for detected issues
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE ADMIN.SECURITY.RBAC_RUN_SECURITY_SCAN()
+CREATE OR REPLACE PROCEDURE ADMIN.SECURITY.RBAC_RUN_SECURITY_SCAN()
 RETURNS VARIANT
-LANGUAGE SQL
+LANGUAGE JAVASCRIPT
 EXECUTE AS CALLER
 AS
 $$
-DECLARE
-    v_anomaly_dashboard VARIANT;
-    v_misalignment_dashboard VARIANT;
-    v_alerts_created INTEGER := 0;
-    v_alert_id VARCHAR;
-BEGIN
-    -- Run anomaly detection
-    CALL RBAC_ACCESS_ANOMALY_DASHBOARD(1) INTO v_anomaly_dashboard;
+    // Run anomaly detection
+    var stmt1 = snowflake.createStatement({
+        sqlText: "CALL ADMIN.SECURITY.RBAC_ACCESS_ANOMALY_DASHBOARD(1)"
+    });
+    var rs1 = stmt1.execute();
+    rs1.next();
+    var anomalyDashboard = rs1.getColumnValue(1);
     
-    -- Run misalignment detection
-    CALL RBAC_CONFIG_MISALIGNMENT_DASHBOARD() INTO v_misalignment_dashboard;
+    // Run misalignment detection
+    var stmt2 = snowflake.createStatement({
+        sqlText: "CALL ADMIN.SECURITY.RBAC_CONFIG_MISALIGNMENT_DASHBOARD()"
+    });
+    var rs2 = stmt2.execute();
+    rs2.next();
+    var misalignmentDashboard = rs2.getColumnValue(1);
     
-    -- Create alerts for critical findings
-    IF v_anomaly_dashboard:summary:failed_logins > 10 THEN
-        CALL RBAC_CREATE_SECURITY_ALERT(
-            'FAILED_LOGINS',
-            'HIGH',
-            'Elevated Failed Login Attempts Detected',
-            v_anomaly_dashboard:summary:failed_logins || ' failed logins in the last 24 hours',
-            NULL, NULL,
-            OBJECT_CONSTRUCT('count', v_anomaly_dashboard:summary:failed_logins)
-        ) INTO v_alert_id;
-        v_alerts_created := v_alerts_created + 1;
-    END IF;
+    var alertsCreated = 0;
     
-    IF v_misalignment_dashboard:summary:direct_grants > 0 THEN
-        CALL RBAC_CREATE_SECURITY_ALERT(
-            'DIRECT_GRANTS',
-            'MEDIUM',
-            'Direct Grants Bypassing RBAC Detected',
-            v_misalignment_dashboard:summary:direct_grants || ' direct grants found bypassing RBAC',
-            NULL, NULL,
-            OBJECT_CONSTRUCT('count', v_misalignment_dashboard:summary:direct_grants)
-        ) INTO v_alert_id;
-        v_alerts_created := v_alerts_created + 1;
-    END IF;
+    // Create alerts for critical findings
+    if (anomalyDashboard && anomalyDashboard.summary && anomalyDashboard.summary.failed_logins > 10) {
+        var stmt = snowflake.createStatement({
+            sqlText: `CALL ADMIN.SECURITY.RBAC_CREATE_SECURITY_ALERT(?, ?, ?, ?, NULL, NULL, PARSE_JSON(?))`,
+            binds: [
+                'FAILED_LOGINS',
+                'HIGH',
+                'Elevated Failed Login Attempts Detected',
+                anomalyDashboard.summary.failed_logins + ' failed logins in the last 24 hours',
+                JSON.stringify({count: anomalyDashboard.summary.failed_logins})
+            ]
+        });
+        stmt.execute();
+        alertsCreated++;
+    }
     
-    IF v_anomaly_dashboard:summary:unusual_hour_access > 20 THEN
-        CALL RBAC_CREATE_SECURITY_ALERT(
-            'UNUSUAL_ACCESS',
-            'MEDIUM',
-            'Unusual Hour Access Pattern Detected',
-            v_anomaly_dashboard:summary:unusual_hour_access || ' queries executed outside business hours',
-            NULL, NULL,
-            OBJECT_CONSTRUCT('count', v_anomaly_dashboard:summary:unusual_hour_access)
-        ) INTO v_alert_id;
-        v_alerts_created := v_alerts_created + 1;
-    END IF;
+    if (misalignmentDashboard && misalignmentDashboard.summary && misalignmentDashboard.summary.direct_grants > 0) {
+        var stmt = snowflake.createStatement({
+            sqlText: `CALL ADMIN.SECURITY.RBAC_CREATE_SECURITY_ALERT(?, ?, ?, ?, NULL, NULL, PARSE_JSON(?))`,
+            binds: [
+                'DIRECT_GRANTS',
+                'MEDIUM',
+                'Direct Grants Bypassing RBAC Detected',
+                misalignmentDashboard.summary.direct_grants + ' direct grants found bypassing RBAC',
+                JSON.stringify({count: misalignmentDashboard.summary.direct_grants})
+            ]
+        });
+        stmt.execute();
+        alertsCreated++;
+    }
     
-    RETURN OBJECT_CONSTRUCT(
-        'status', 'SUCCESS',
-        'scan_timestamp', CURRENT_TIMESTAMP(),
-        'alerts_created', v_alerts_created,
-        'findings', OBJECT_CONSTRUCT(
-            'anomalies', v_anomaly_dashboard:summary,
-            'misalignments', v_misalignment_dashboard:summary
-        )
-    );
-END;
+    if (anomalyDashboard && anomalyDashboard.summary && anomalyDashboard.summary.unusual_hour_access > 20) {
+        var stmt = snowflake.createStatement({
+            sqlText: `CALL ADMIN.SECURITY.RBAC_CREATE_SECURITY_ALERT(?, ?, ?, ?, NULL, NULL, PARSE_JSON(?))`,
+            binds: [
+                'UNUSUAL_ACCESS',
+                'MEDIUM',
+                'Unusual Hour Access Pattern Detected',
+                anomalyDashboard.summary.unusual_hour_access + ' queries executed outside business hours',
+                JSON.stringify({count: anomalyDashboard.summary.unusual_hour_access})
+            ]
+        });
+        stmt.execute();
+        alertsCreated++;
+    }
+    
+    var tsStmt = snowflake.createStatement({sqlText: "SELECT CURRENT_TIMESTAMP()"});
+    var tsRs = tsStmt.execute();
+    tsRs.next();
+    var currentTimestamp = tsRs.getColumnValue(1);
+    
+    return {
+        status: 'SUCCESS',
+        scan_timestamp: currentTimestamp,
+        alerts_created: alertsCreated,
+        findings: {
+            anomalies: anomalyDashboard ? anomalyDashboard.summary : {},
+            misalignments: misalignmentDashboard ? misalignmentDashboard.summary : {}
+        }
+    };
 $$;
 
 -- #############################################################################
@@ -929,12 +972,12 @@ $$;
 
 GRANT USAGE ON PROCEDURE ADMIN.SECURITY.RBAC_ROLE_ASSIGNMENT_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
 GRANT USAGE ON PROCEDURE ADMIN.SECURITY.RBAC_ACCESS_ANOMALY_DASHBOARD(INTEGER) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_CONFIG_MISALIGNMENT_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE ADMIN.SECURITY.RBAC_CREATE_SECURITY_EXCEPTION(VARCHAR, VARCHAR, VARCHAR, VARCHAR, TEXT, INTEGER, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_SECURITY_EXCEPTIONS_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_CREATE_SECURITY_ALERT(VARCHAR, VARCHAR, VARCHAR, TEXT, VARCHAR, VARCHAR, VARIANT) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_SECURITY_ALERTS_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_RESOLVE_SECURITY_ALERT(VARCHAR, VARCHAR, TEXT) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.SECURITY.RBAC_CONFIG_MISALIGNMENT_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.SECURITY.RBAC_CREATE_SECURITY_EXCEPTION(VARCHAR, TEXT, VARCHAR, VARCHAR, VARCHAR, INTEGER, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.SECURITY.RBAC_SECURITY_EXCEPTIONS_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.SECURITY.RBAC_CREATE_SECURITY_ALERT(VARCHAR, VARCHAR, VARCHAR, TEXT, VARCHAR, VARCHAR, VARIANT) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.SECURITY.RBAC_SECURITY_ALERTS_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.SECURITY.RBAC_RESOLVE_SECURITY_ALERT(VARCHAR, VARCHAR, TEXT) TO ROLE SRS_SECURITY_ADMIN;
 GRANT USAGE ON PROCEDURE ADMIN.SECURITY.RBAC_SECURITY_MONITORING_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
 GRANT USAGE ON PROCEDURE ADMIN.SECURITY.RBAC_RUN_SECURITY_SCAN() TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_SECURITY_MONITORING_DASHBOARD() TO ROLE SRS_ACCOUNT_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.SECURITY.RBAC_SECURITY_MONITORING_DASHBOARD() TO ROLE SRS_ACCOUNT_ADMIN;

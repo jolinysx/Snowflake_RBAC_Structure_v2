@@ -93,7 +93,7 @@ DECLARE
     v_sql VARCHAR;
 BEGIN
     -- Validate environment
-    IF P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD') THEN
+    IF (P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid environment. Must be one of: DEV, TST, UAT, PPE, PRD',
@@ -111,7 +111,7 @@ BEGIN
     v_is_dev := (P_ENVIRONMENT = 'DEV');
     
     -- Determine object owner based on environment
-    IF v_is_dev THEN
+    IF (v_is_dev) THEN
         v_object_owner_role := v_developer_role;
     ELSE
         v_object_owner_role := v_devops_role;
@@ -143,7 +143,7 @@ BEGIN
     EXECUTE IMMEDIATE v_sql;
     v_steps := ARRAY_APPEND(v_steps, OBJECT_CONSTRUCT('step', 'Create READ Database Role', 'sql', v_sql, 'status', 'SUCCESS'));
     
-    IF v_is_dev THEN
+    IF (v_is_dev) THEN
         v_sql := 'CREATE DATABASE ROLE IF NOT EXISTS ' || v_write_db_role ||
                  ' COMMENT = ''Database role: WRITE access on ' || v_full_db_name || '.' || P_SCHEMA_NAME || '''';
         EXECUTE IMMEDIATE v_sql;
@@ -182,7 +182,7 @@ BEGIN
     -- =========================================================================
     -- STEP 5: Grant WRITE Privileges (DEV only)
     -- =========================================================================
-    IF v_is_dev THEN
+    IF (v_is_dev) THEN
         EXECUTE IMMEDIATE 'GRANT USAGE ON SCHEMA ' || P_SCHEMA_NAME || ' TO DATABASE ROLE ' || v_write_db_role;
         EXECUTE IMMEDIATE 'GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA ' || P_SCHEMA_NAME || ' TO DATABASE ROLE ' || v_write_db_role;
         EXECUTE IMMEDIATE 'GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON FUTURE TABLES IN SCHEMA ' || P_SCHEMA_NAME || ' TO DATABASE ROLE ' || v_write_db_role;
@@ -258,7 +258,7 @@ BEGIN
     -- =========================================================================
     -- STEP 8: Grant CREATE privileges (DEV: DEVELOPER, Non-DEV: SRS_DEVOPS)
     -- =========================================================================
-    IF v_is_dev THEN
+    IF (v_is_dev) THEN
         EXECUTE IMMEDIATE 'GRANT CREATE TABLE ON SCHEMA ' || v_full_db_name || '.' || P_SCHEMA_NAME || ' TO ROLE ' || v_developer_role;
         EXECUTE IMMEDIATE 'GRANT CREATE VIEW ON SCHEMA ' || v_full_db_name || '.' || P_SCHEMA_NAME || ' TO ROLE ' || v_developer_role;
         EXECUTE IMMEDIATE 'GRANT CREATE MATERIALIZED VIEW ON SCHEMA ' || v_full_db_name || '.' || P_SCHEMA_NAME || ' TO ROLE ' || v_developer_role;

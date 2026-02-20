@@ -91,7 +91,7 @@ DECLARE
           AND (P_SCHEMA_NAME IS NULL OR SCHEMA_NAME = P_SCHEMA_NAME);
 BEGIN
     -- Validate environment
-    IF P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD') THEN
+    IF (P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid environment. Must be one of: DEV, TST, UAT, PPE, PRD'
@@ -115,7 +115,7 @@ BEGIN
         WHERE DATABASE_NAME = :v_full_db_name
     );
     
-    IF NOT v_db_exists THEN
+    IF (NOT v_db_exists) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Database does not exist',
@@ -148,7 +148,7 @@ BEGIN
             WHERE CATALOG_NAME = :v_full_db_name AND SCHEMA_NAME = :v_schema_name
         );
         
-        IF NOT v_is_managed THEN
+        IF (NOT v_is_managed) THEN
             v_schema_findings := ARRAY_APPEND(v_schema_findings, OBJECT_CONSTRUCT(
                 'check', 'MANAGED_ACCESS',
                 'status', 'FAIL',
@@ -174,7 +174,7 @@ BEGIN
             WHERE NAME = :v_read_db_role
         );
         
-        IF NOT v_read_role_exists THEN
+        IF (NOT v_read_role_exists) THEN
             v_schema_findings := ARRAY_APPEND(v_schema_findings, OBJECT_CONSTRUCT(
                 'check', 'READ_DATABASE_ROLE',
                 'status', 'FAIL',
@@ -194,14 +194,14 @@ BEGIN
         -- ---------------------------------------------------------------------
         -- CHECK 2.3: WRITE Database Role Exists (DEV only)
         -- ---------------------------------------------------------------------
-        IF v_is_dev THEN
+        IF (v_is_dev) THEN
             LET v_write_role_exists BOOLEAN := (
                 SELECT COUNT(*) > 0
                 FROM INFORMATION_SCHEMA.DATABASE_ROLES
                 WHERE NAME = :v_write_db_role
             );
             
-            IF NOT v_write_role_exists THEN
+            IF (NOT v_write_role_exists) THEN
                 v_schema_findings := ARRAY_APPEND(v_schema_findings, OBJECT_CONSTRUCT(
                     'check', 'WRITE_DATABASE_ROLE',
                     'status', 'FAIL',
@@ -225,7 +225,7 @@ BEGIN
                 WHERE NAME = :v_write_db_role
             );
             
-            IF v_write_role_exists_non_dev THEN
+            IF (v_write_role_exists_non_dev) THEN
                 v_schema_findings := ARRAY_APPEND(v_schema_findings, OBJECT_CONSTRUCT(
                     'check', 'WRITE_DATABASE_ROLE',
                     'status', 'WARNING',
@@ -257,7 +257,7 @@ BEGIN
               AND TABLE_TYPE IN ('BASE TABLE', 'VIEW', 'MATERIALIZED VIEW')
         );
         
-        IF ARRAY_SIZE(v_incorrect_owners) > 0 THEN
+        IF (ARRAY_SIZE(v_incorrect_owners) > 0 AND v_incorrect_owners IS NOT NULL) THEN
             v_schema_findings := ARRAY_APPEND(v_schema_findings, OBJECT_CONSTRUCT(
                 'check', 'OBJECT_OWNERSHIP',
                 'status', 'FAIL',
@@ -296,7 +296,7 @@ BEGIN
               AND GRANTEE = :v_object_owner_role
         );
         
-        IF NOT v_has_future_ownership THEN
+        IF (NOT v_has_future_ownership) THEN
             v_schema_findings := ARRAY_APPEND(v_schema_findings, OBJECT_CONSTRUCT(
                 'check', 'FUTURE_OWNERSHIP_GRANT',
                 'status', 'FAIL',
@@ -316,7 +316,7 @@ BEGIN
         -- ---------------------------------------------------------------------
         -- CHECK 2.6: Database Role Grant to Functional Roles
         -- ---------------------------------------------------------------------
-        IF v_read_role_exists THEN
+        IF (v_read_role_exists) THEN
             LET v_read_granted_to_enduser BOOLEAN := FALSE;
             
             -- Check if READ role is granted to END_USER
@@ -326,7 +326,7 @@ BEGIN
                 );
                 LET v_grant_cursor CURSOR FOR v_grant_check;
                 FOR grant_row IN v_grant_cursor DO
-                    IF grant_row."grantee_name" = v_end_user_role THEN
+                    IF (grant_row."grantee_name" = v_end_user_role) THEN
                         v_read_granted_to_enduser := TRUE;
                     END IF;
                 END FOR;
@@ -335,7 +335,7 @@ BEGIN
                     v_read_granted_to_enduser := FALSE;
             END;
             
-            IF NOT v_read_granted_to_enduser THEN
+            IF (NOT v_read_granted_to_enduser) THEN
                 v_schema_findings := ARRAY_APPEND(v_schema_findings, OBJECT_CONSTRUCT(
                     'check', 'READ_ROLE_GRANT',
                     'status', 'FAIL',
@@ -356,7 +356,7 @@ BEGIN
         END IF;
         
         -- Update overall compliance
-        IF NOT v_schema_compliant THEN
+        IF (NOT v_schema_compliant) THEN
             v_compliant := FALSE;
         END IF;
         
@@ -394,7 +394,7 @@ BEGIN
               AND DELETED_ON IS NULL
         );
         
-        IF NOT v_role_exists THEN
+        IF (NOT v_role_exists) THEN
             v_role_findings := ARRAY_APPEND(v_role_findings, OBJECT_CONSTRUCT(
                 'role', v_role_to_check,
                 'status', 'FAIL',

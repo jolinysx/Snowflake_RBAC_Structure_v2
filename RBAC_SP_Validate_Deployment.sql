@@ -221,13 +221,13 @@ BEGIN
         )
     );
     
-    IF P_SECTION IS NOT NULL THEN
-        IF P_SECTION = 'ROLES' THEN
+    IF (P_SECTION IS NOT NULL) THEN
+        IF (P_SECTION = 'ROLES') THEN
             RETURN OBJECT_CONSTRUCT(
                 'system_roles', v_expected:system_roles,
                 'functional_role_prefixes', v_expected:functional_role_prefixes
             );
-        ELSEIF P_SECTION = 'SCHEMAS' THEN
+        ELSEIF (P_SECTION = 'SCHEMAS') THEN
             RETURN OBJECT_CONSTRUCT('schemas', v_expected:schemas);
         ELSE
             RETURN OBJECT_CONSTRUCT(
@@ -278,7 +278,7 @@ DECLARE
 BEGIN
     CALL ADMIN.RBAC.RBAC_GET_EXPECTED_OBJECTS(P_SECTION) INTO v_expected;
     
-    IF P_SECTION = 'ROLES' OR P_SECTION IS NULL THEN
+    IF (P_SECTION = 'ROLES' OR P_SECTION IS NULL) THEN
         FOR i IN 0 TO ARRAY_SIZE(v_expected:system_roles) - 1 DO
             v_role_name := v_expected:system_roles[i]::VARCHAR;
             
@@ -286,7 +286,7 @@ BEGIN
             FROM SNOWFLAKE.ACCOUNT_USAGE.ROLES
             WHERE NAME = v_role_name AND DELETED_ON IS NULL;
             
-            IF v_exists THEN
+            IF (v_exists) THEN
                 v_found_roles := ARRAY_APPEND(v_found_roles, v_role_name);
             ELSE
                 v_missing_roles := ARRAY_APPEND(v_missing_roles, v_role_name);
@@ -304,7 +304,7 @@ BEGIN
         );
     END IF;
     
-    IF P_SECTION = 'SCHEMAS' THEN
+    IF (P_SECTION = 'SCHEMAS') THEN
         FOR i IN 0 TO ARRAY_SIZE(v_expected:schemas) - 1 DO
             v_schema_name := v_expected:schemas[i]::VARCHAR;
             
@@ -312,7 +312,7 @@ BEGIN
             FROM INFORMATION_SCHEMA.SCHEMATA
             WHERE CATALOG_NAME = 'ADMIN' AND SCHEMA_NAME = v_schema_name;
             
-            IF NOT v_exists THEN
+            IF (NOT v_exists) THEN
                 v_missing_schemas := ARRAY_APPEND(v_missing_schemas, v_schema_name);
                 v_issues := v_issues + 1;
             END IF;
@@ -327,12 +327,12 @@ BEGIN
         );
     END IF;
     
-    IF v_expected[P_SECTION] IS NOT NULL THEN
+    IF (v_expected[P_SECTION] IS NOT NULL) THEN
         SELECT COUNT(*) > 0 INTO v_exists
         FROM INFORMATION_SCHEMA.SCHEMATA
         WHERE CATALOG_NAME = 'ADMIN' AND SCHEMA_NAME = P_SECTION;
         
-        IF NOT v_exists THEN
+        IF (NOT v_exists) THEN
             RETURN OBJECT_CONSTRUCT(
                 'section', P_SECTION,
                 'status', 'FAIL',
@@ -349,7 +349,7 @@ BEGIN
               AND PROCEDURE_SCHEMA = P_SECTION 
               AND PROCEDURE_NAME = v_proc_name;
             
-            IF v_exists THEN
+            IF (v_exists) THEN
                 v_found_procedures := ARRAY_APPEND(v_found_procedures, v_proc_name);
             ELSE
                 v_missing_procedures := ARRAY_APPEND(v_missing_procedures, v_proc_name);
@@ -366,7 +366,7 @@ BEGIN
               AND TABLE_SCHEMA = P_SECTION 
               AND TABLE_NAME = v_table_name;
             
-            IF v_exists THEN
+            IF (v_exists) THEN
                 v_found_tables := ARRAY_APPEND(v_found_tables, v_table_name);
             ELSE
                 v_missing_tables := ARRAY_APPEND(v_missing_tables, v_table_name);
@@ -443,7 +443,7 @@ BEGIN
     FROM INFORMATION_SCHEMA.DATABASES
     WHERE DATABASE_NAME = 'ADMIN';
     
-    IF NOT v_admin_exists THEN
+    IF (NOT v_admin_exists) THEN
         RETURN OBJECT_CONSTRUCT(
             'validation_time', CURRENT_TIMESTAMP(),
             'overall_status', 'FAIL',
@@ -452,7 +452,7 @@ BEGIN
         );
     END IF;
     
-    IF P_SECTION IS NOT NULL THEN
+    IF (P_SECTION IS NOT NULL) THEN
         CALL ADMIN.RBAC.RBAC_VALIDATE_SECTION(P_SECTION) INTO v_section_result;
         
         RETURN OBJECT_CONSTRUCT(
@@ -476,24 +476,24 @@ BEGIN
         
         v_results := OBJECT_INSERT(v_results, v_section, v_section_result);
         
-        IF v_section_result:status::VARCHAR = 'PASS' THEN
+        IF (v_section_result:status::VARCHAR = 'PASS') THEN
             v_pass_count := v_pass_count + 1;
-        ELSEIF v_section_result:status::VARCHAR = 'FAIL' THEN
+        ELSEIF (v_section_result:status::VARCHAR = 'FAIL') THEN
             v_fail_count := v_fail_count + 1;
         ELSE
             v_warn_count := v_warn_count + 1;
         END IF;
         
-        IF v_section_result:total_issues IS NOT NULL THEN
+        IF (v_section_result:total_issues IS NOT NULL) THEN
             v_total_issues := v_total_issues + v_section_result:total_issues::INTEGER;
-        ELSEIF v_section_result:missing_count IS NOT NULL THEN
+        ELSEIF (v_section_result:missing_count IS NOT NULL) THEN
             v_total_issues := v_total_issues + v_section_result:missing_count::INTEGER;
         END IF;
     END FOR;
     
-    IF v_fail_count > 0 THEN
+    IF (v_fail_count > 0) THEN
         v_overall_status := 'FAIL';
-    ELSEIF v_warn_count > 0 THEN
+    ELSEIF (v_warn_count > 0) THEN
         v_overall_status := 'WARN';
     ELSE
         v_overall_status := 'PASS';

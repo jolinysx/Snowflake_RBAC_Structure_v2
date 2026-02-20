@@ -22,7 +22,7 @@
  * ═══════════════════════════════════════════════════════════════════════════════
  * COMPLIANCE RULES:
  *   1. PERSON accounts: Should only have SRF_* and SRA_* roles (not SRW_*)
- *   2. SERVICE/LEGACY_SERVICE accounts: Should only have SRW_* roles (not SRF_*/SRA_*)
+ *   2. SERVICE/LEGACY_SERVICE accounts: Should only have SRW_* roles (not SRF_*|SRA_*)
  *   3. Orphaned roles: Roles granted but not matching naming conventions
  *   4. Missing roles: Service accounts without any SRW_* role
  * 
@@ -74,8 +74,8 @@ DECLARE
     v_env_filter VARCHAR;
 BEGIN
     -- Build environment filter
-    IF P_ENVIRONMENT IS NOT NULL THEN
-        IF P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD') THEN
+    IF (P_ENVIRONMENT IS NOT NULL) THEN
+        IF (P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD')) THEN
             RETURN OBJECT_CONSTRUCT(
                 'status', 'ERROR',
                 'message', 'Invalid environment. Must be one of: DEV, TST, UAT, PPE, PRD or NULL for all'
@@ -108,7 +108,7 @@ BEGIN
           AND g.DELETED_ON IS NULL
     );
     
-    IF v_service_with_srf IS NOT NULL AND ARRAY_SIZE(v_service_with_srf) > 0 THEN
+    IF (v_service_with_srf IS NOT NULL AND ARRAY_SIZE(v_service_with_srf) > 0) THEN
         FOR i IN 0 TO ARRAY_SIZE(v_service_with_srf) - 1 DO
             v_violations := ARRAY_APPEND(v_violations, v_service_with_srf[i]);
         END FOR;
@@ -136,7 +136,7 @@ BEGIN
           AND g.DELETED_ON IS NULL
     );
     
-    IF v_service_with_sra IS NOT NULL AND ARRAY_SIZE(v_service_with_sra) > 0 THEN
+    IF (v_service_with_sra IS NOT NULL AND ARRAY_SIZE(v_service_with_sra) > 0) THEN
         FOR i IN 0 TO ARRAY_SIZE(v_service_with_sra) - 1 DO
             v_violations := ARRAY_APPEND(v_violations, v_service_with_sra[i]);
         END FOR;
@@ -164,7 +164,7 @@ BEGIN
           AND g.DELETED_ON IS NULL
     );
     
-    IF v_person_with_srw IS NOT NULL AND ARRAY_SIZE(v_person_with_srw) > 0 THEN
+    IF (v_person_with_srw IS NOT NULL AND ARRAY_SIZE(v_person_with_srw) > 0) THEN
         FOR i IN 0 TO ARRAY_SIZE(v_person_with_srw) - 1 DO
             v_violations := ARRAY_APPEND(v_violations, v_person_with_srw[i]);
         END FOR;
@@ -195,7 +195,7 @@ BEGIN
           )
     );
     
-    IF v_service_no_srw IS NOT NULL AND ARRAY_SIZE(v_service_no_srw) > 0 THEN
+    IF (v_service_no_srw IS NOT NULL AND ARRAY_SIZE(v_service_no_srw) > 0) THEN
         FOR i IN 0 TO ARRAY_SIZE(v_service_no_srw) - 1 DO
             v_warnings := ARRAY_APPEND(v_warnings, v_service_no_srw[i]);
         END FOR;
@@ -234,7 +234,7 @@ BEGIN
           )
     );
     
-    IF v_person_no_sra IS NOT NULL AND ARRAY_SIZE(v_person_no_sra) > 0 THEN
+    IF (v_person_no_sra IS NOT NULL AND ARRAY_SIZE(v_person_no_sra) > 0) THEN
         FOR i IN 0 TO ARRAY_SIZE(v_person_no_sra) - 1 DO
             v_warnings := ARRAY_APPEND(v_warnings, v_person_no_sra[i]);
         END FOR;
@@ -273,7 +273,7 @@ BEGIN
           )
     );
     
-    IF v_person_no_srf IS NOT NULL AND ARRAY_SIZE(v_person_no_srf) > 0 THEN
+    IF (v_person_no_srf IS NOT NULL AND ARRAY_SIZE(v_person_no_srf) > 0) THEN
         FOR i IN 0 TO ARRAY_SIZE(v_person_no_srf) - 1 DO
             v_warnings := ARRAY_APPEND(v_warnings, v_person_no_srf[i]);
         END FOR;
@@ -305,7 +305,7 @@ BEGIN
     );
     
     -- Only add non-standard roles if details requested
-    IF P_INCLUDE_DETAILS AND v_non_standard_roles IS NOT NULL AND ARRAY_SIZE(v_non_standard_roles) > 0 THEN
+    IF (P_INCLUDE_DETAILS AND v_non_standard_roles IS NOT NULL AND ARRAY_SIZE(v_non_standard_roles) > 0) THEN
         FOR i IN 0 TO ARRAY_SIZE(v_non_standard_roles) - 1 DO
             v_warnings := ARRAY_APPEND(v_warnings, v_non_standard_roles[i]);
         END FOR;
@@ -417,7 +417,7 @@ DECLARE
     v_env_filter VARCHAR;
 BEGIN
     -- Build environment filter
-    IF P_ENVIRONMENT IS NOT NULL THEN
+    IF (P_ENVIRONMENT IS NOT NULL) THEN
         v_env_filter := '_' || P_ENVIRONMENT || '_';
     ELSE
         v_env_filter := '_%_';
@@ -436,7 +436,7 @@ BEGIN
           AND g.DELETED_ON IS NULL
     );
     
-    IF v_revoke_srf IS NOT NULL THEN
+    IF (v_revoke_srf IS NOT NULL) THEN
         FOR i IN 0 TO ARRAY_SIZE(v_revoke_srf) - 1 DO
             v_remediation_statements := ARRAY_APPEND(v_remediation_statements, 
                 OBJECT_CONSTRUCT('type', 'REVOKE_SRF_FROM_SERVICE', 'sql', v_revoke_srf[i]));
@@ -456,7 +456,7 @@ BEGIN
           AND g.DELETED_ON IS NULL
     );
     
-    IF v_revoke_sra IS NOT NULL THEN
+    IF (v_revoke_sra IS NOT NULL) THEN
         FOR i IN 0 TO ARRAY_SIZE(v_revoke_sra) - 1 DO
             v_remediation_statements := ARRAY_APPEND(v_remediation_statements,
                 OBJECT_CONSTRUCT('type', 'REVOKE_SRA_FROM_SERVICE', 'sql', v_revoke_sra[i]));
@@ -476,7 +476,7 @@ BEGIN
           AND g.DELETED_ON IS NULL
     );
     
-    IF v_revoke_srw IS NOT NULL THEN
+    IF (v_revoke_srw IS NOT NULL) THEN
         FOR i IN 0 TO ARRAY_SIZE(v_revoke_srw) - 1 DO
             v_remediation_statements := ARRAY_APPEND(v_remediation_statements,
                 OBJECT_CONSTRUCT('type', 'REVOKE_SRW_FROM_PERSON', 'sql', v_revoke_srw[i]));
@@ -540,7 +540,7 @@ BEGIN
           AND DELETED_ON IS NULL
     );
     
-    IF v_user_type IS NULL THEN
+    IF (v_user_type IS NULL) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'User not found',
@@ -597,14 +597,14 @@ BEGIN
     );
 
     -- Check compliance based on user type
-    IF v_user_type IN ('SERVICE', 'LEGACY_SERVICE') THEN
+    IF (v_user_type IN ('SERVICE', 'LEGACY_SERVICE')) THEN
         -- Service accounts should NOT have SRF_* or SRA_* roles
-        IF v_srf_roles IS NOT NULL AND ARRAY_SIZE(v_srf_roles) > 0 THEN
+        IF (v_srf_roles IS NOT NULL AND ARRAY_SIZE(v_srf_roles) > 0) THEN
             v_is_compliant := FALSE;
             v_compliance_issues := ARRAY_APPEND(v_compliance_issues,
                 'Service account has SRF_* functional roles (should use SRW_* instead)');
         END IF;
-        IF v_sra_roles IS NOT NULL AND ARRAY_SIZE(v_sra_roles) > 0 THEN
+        IF (v_sra_roles IS NOT NULL AND ARRAY_SIZE(v_sra_roles) > 0) THEN
             v_is_compliant := FALSE;
             v_compliance_issues := ARRAY_APPEND(v_compliance_issues,
                 'Service account has SRA_* access roles (should use SRW_* instead)');
@@ -615,7 +615,7 @@ BEGIN
         END IF;
     ELSE
         -- Person accounts should NOT have SRW_* roles
-        IF v_srw_roles IS NOT NULL AND ARRAY_SIZE(v_srw_roles) > 0 THEN
+        IF (v_srw_roles IS NOT NULL AND ARRAY_SIZE(v_srw_roles) > 0) THEN
             v_is_compliant := FALSE;
             v_compliance_issues := ARRAY_APPEND(v_compliance_issues,
                 'Person account has SRW_* service roles (should use SRF_* and SRA_* instead)');

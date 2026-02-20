@@ -116,15 +116,16 @@ DECLARE
     v_access_role VARCHAR;
     v_system_admin_role VARCHAR := 'SRS_SYSTEM_ADMIN';
     v_sql VARCHAR;
+    v_access_role_exists BOOLEAN;
 BEGIN
-    IF P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD') THEN
+    IF (P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid environment. Must be one of: DEV, TST, UAT, PPE, PRD'
         );
     END IF;
     
-    IF P_CAPABILITY_LEVEL NOT IN ('END_USER', 'ANALYST', 'DEVELOPER', 'TEAM_LEADER', 'DATA_SCIENTIST', 'DBADMIN') THEN
+    IF (P_CAPABILITY_LEVEL NOT IN ('END_USER', 'ANALYST', 'DEVELOPER', 'TEAM_LEADER', 'DATA_SCIENTIST', 'DBADMIN')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid capability level. Must be one of: END_USER, ANALYST, DEVELOPER, TEAM_LEADER, DATA_SCIENTIST, DBADMIN'
@@ -135,13 +136,13 @@ BEGIN
     v_functional_role := 'SRF_' || P_ENVIRONMENT || '_' || P_CAPABILITY_LEVEL;
     v_access_role := 'SRA_' || P_ENVIRONMENT || '_' || UPPER(P_DOMAIN_NAME) || '_ACCESS';
     
-    LET v_access_role_exists BOOLEAN := (
+    v_access_role_exists := (
         SELECT COUNT(*) > 0
         FROM SNOWFLAKE.ACCOUNT_USAGE.ROLES
         WHERE NAME = :v_access_role AND DELETED_ON IS NULL
     );
     
-    IF NOT v_access_role_exists THEN
+    IF (NOT v_access_role_exists) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Access role does not exist. Create it first using ADMIN.RBAC.RBAC_CREATE_ACCESS_ROLE.',
@@ -210,11 +211,11 @@ BEGIN
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Service role does not exist.', 'service_role', v_service_role);
     END IF;
     
-    LET v_access_role_exists BOOLEAN := (
+    v_access_role_exists := (
         SELECT COUNT(*) > 0 FROM SNOWFLAKE.ACCOUNT_USAGE.ROLES WHERE NAME = :v_additional_access_role AND DELETED_ON IS NULL
     );
     
-    IF NOT v_access_role_exists THEN
+    IF (NOT v_access_role_exists) THEN
         RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Additional access role does not exist.', 'access_role', v_additional_access_role);
     END IF;
     

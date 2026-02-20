@@ -264,7 +264,7 @@ $$;
  * Purpose: Real-time policy compliance status and violation tracking
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_CLONE_COMPLIANCE_DASHBOARD()
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.CLONES.RBAC_CLONE_COMPLIANCE_DASHBOARD()
 RETURNS VARIANT
 LANGUAGE SQL
 EXECUTE AS CALLER
@@ -404,7 +404,7 @@ $$;
  * Purpose: Analyze clone creation and deletion patterns over time
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_CLONE_TRENDS_DASHBOARD(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.CLONES.RBAC_CLONE_TRENDS_DASHBOARD(
     P_DAYS_BACK INTEGER DEFAULT 30
 )
 RETURNS VARIANT
@@ -574,13 +574,13 @@ DECLARE
     v_alerts ARRAY := ARRAY_CONSTRUCT();
 BEGIN
     -- Get usage dashboard
-    CALL RBAC_CLONE_USAGE_DASHBOARD() INTO v_usage;
+    CALL ADMIN.CLONES.RBAC_CLONE_USAGE_DASHBOARD() INTO v_usage;
     
     -- Get compliance dashboard
-    CALL RBAC_CLONE_COMPLIANCE_DASHBOARD() INTO v_compliance;
+    CALL ADMIN.CLONES.RBAC_CLONE_COMPLIANCE_DASHBOARD() INTO v_compliance;
     
     -- Generate alerts
-    IF v_compliance:summary:open_violations > 0 THEN
+    IF (v_compliance:summary:open_violations > 0) THEN
         v_alerts := ARRAY_APPEND(v_alerts, OBJECT_CONSTRUCT(
             'level', 'WARNING',
             'message', v_compliance:summary:open_violations || ' open policy violations require attention',
@@ -588,7 +588,7 @@ BEGIN
         ));
     END IF;
     
-    IF v_usage:summary:clones_expiring_7_days > 0 THEN
+    IF (v_usage:summary:clones_expiring_7_days > 0) THEN
         v_alerts := ARRAY_APPEND(v_alerts, OBJECT_CONSTRUCT(
             'level', 'INFO',
             'message', v_usage:summary:clones_expiring_7_days || ' clones expiring within 7 days',
@@ -596,7 +596,7 @@ BEGIN
         ));
     END IF;
     
-    IF v_compliance:violations_by_severity:CRITICAL > 0 THEN
+    IF (v_compliance:violations_by_severity:CRITICAL > 0) THEN
         v_alerts := ARRAY_APPEND(v_alerts, OBJECT_CONSTRUCT(
             'level', 'CRITICAL',
             'message', 'Critical policy violations detected',
@@ -630,10 +630,10 @@ $$;
 -- SECTION 6: GRANT PERMISSIONS
 -- #############################################################################
 
-GRANT USAGE ON PROCEDURE RBAC_CLONE_USAGE_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_CLONE_USAGE_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
 GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_CLONE_USAGE_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
 GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_CLONE_STORAGE_DASHBOARD(FLOAT) TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_CLONE_COMPLIANCE_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_CLONE_TRENDS_DASHBOARD(INTEGER) TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_CLONE_MONITORING_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_CLONE_COMPLIANCE_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_CLONE_TRENDS_DASHBOARD(INTEGER) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_CLONE_MONITORING_DASHBOARD() TO ROLE SRS_SYSTEM_ADMIN;
 GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_CLONE_MONITORING_DASHBOARD() TO ROLE SRS_SECURITY_ADMIN;

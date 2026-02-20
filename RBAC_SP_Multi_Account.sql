@@ -73,6 +73,10 @@
  * Execution Role: ACCOUNTADMIN
  ******************************************************************************/
 
+
+USE DATABASE ADMIN;
+USE SCHEMA RBAC;
+
 CREATE OR REPLACE SECURE PROCEDURE RBAC_INITIAL_CONFIG_MULTI_ACCOUNT(
     P_ACCOUNT_TYPE VARCHAR,
     P_ACCOUNT_PURPOSE VARCHAR,
@@ -97,7 +101,7 @@ BEGIN
     -- =========================================================================
     -- VALIDATION
     -- =========================================================================
-    IF P_ACCOUNT_TYPE NOT IN ('ENVIRONMENT', 'DEPARTMENT', 'HYBRID') THEN
+    IF (P_ACCOUNT_TYPE NOT IN ('ENVIRONMENT', 'DEPARTMENT', 'HYBRID')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid account type. Must be: ENVIRONMENT, DEPARTMENT, or HYBRID'
@@ -105,10 +109,10 @@ BEGIN
     END IF;
     
     -- Determine environments based on account type
-    IF P_ACCOUNT_TYPE = 'ENVIRONMENT' THEN
+    IF (P_ACCOUNT_TYPE = 'ENVIRONMENT') THEN
         -- Single environment account - no env prefix needed
         v_environments := ARRAY_CONSTRUCT(NULL);
-    ELSEIF P_ACCOUNT_TYPE = 'DEPARTMENT' THEN
+    ELSEIF (P_ACCOUNT_TYPE = 'DEPARTMENT') THEN
         -- Department account has all environments
         v_environments := COALESCE(P_ENVIRONMENTS, ARRAY_CONSTRUCT('DEV', 'TST', 'UAT', 'PPE', 'PRD'));
     ELSE
@@ -124,7 +128,7 @@ BEGIN
     -- =========================================================================
     v_sql := 'ALTER ACCOUNT SET DEFAULT_SECONDARY_ROLES = (''ALL'')';
     v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT('section', 'ACCOUNT_SETTINGS', 'sql', v_sql));
-    IF NOT P_DRY_RUN THEN
+    IF (NOT P_DRY_RUN) THEN
         BEGIN
             EXECUTE IMMEDIATE v_sql;
         EXCEPTION WHEN OTHER THEN
@@ -148,7 +152,7 @@ BEGIN
         v_sql := 'CREATE ROLE IF NOT EXISTS ' || v_role_obj:name::VARCHAR || 
                  ' COMMENT = ''' || v_role_obj:comment::VARCHAR || ' [' || P_ACCOUNT_PURPOSE || ']''';
         v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT('section', 'SYSTEM_ROLES', 'sql', v_sql));
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 EXECUTE IMMEDIATE v_sql;
             EXCEPTION WHEN OTHER THEN
@@ -172,7 +176,7 @@ BEGIN
     FOR i IN 0 TO ARRAY_SIZE(v_system_grants) - 1 DO
         v_sql := v_system_grants[i];
         v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT('section', 'SYSTEM_HIERARCHY', 'sql', v_sql));
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 EXECUTE IMMEDIATE v_sql;
             EXCEPTION WHEN OTHER THEN
@@ -194,7 +198,7 @@ BEGIN
     FOR i IN 0 TO ARRAY_SIZE(v_system_privs) - 1 DO
         v_sql := v_system_privs[i];
         v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT('section', 'SYSTEM_PRIVILEGES', 'sql', v_sql));
-        IF NOT P_DRY_RUN THEN
+        IF (NOT P_DRY_RUN) THEN
             BEGIN
                 EXECUTE IMMEDIATE v_sql;
             EXCEPTION WHEN OTHER THEN
@@ -214,7 +218,7 @@ BEGIN
             LET v_role_name VARCHAR;
             
             -- Build role name based on account type
-            IF v_env IS NULL THEN
+            IF (v_env IS NULL) THEN
                 v_role_name := 'SRF_' || v_role_level;  -- No prefix
             ELSE
                 v_role_name := 'SRF_' || v_env || '_' || v_role_level;  -- With env prefix
@@ -228,7 +232,7 @@ BEGIN
                 'sql', v_sql
             ));
             
-            IF NOT P_DRY_RUN THEN
+            IF (NOT P_DRY_RUN) THEN
                 BEGIN
                     EXECUTE IMMEDIATE v_sql;
                 EXCEPTION WHEN OTHER THEN
@@ -251,7 +255,7 @@ BEGIN
         FOR h_idx IN 0 TO ARRAY_SIZE(v_hierarchy) - 1 DO
             v_sql := v_hierarchy[h_idx];
             v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT('section', 'FUNCTIONAL_HIERARCHY', 'sql', v_sql));
-            IF NOT P_DRY_RUN THEN
+            IF (NOT P_DRY_RUN) THEN
                 BEGIN
                     EXECUTE IMMEDIATE v_sql;
                 EXCEPTION WHEN OTHER THEN
@@ -273,7 +277,7 @@ BEGIN
         FOR p_idx IN 0 TO ARRAY_SIZE(v_dbadmin_privs) - 1 DO
             v_sql := v_dbadmin_privs[p_idx];
             v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT('section', 'DBADMIN_PRIVILEGES', 'sql', v_sql));
-            IF NOT P_DRY_RUN THEN
+            IF (NOT P_DRY_RUN) THEN
                 BEGIN
                     EXECUTE IMMEDIATE v_sql;
                 EXCEPTION WHEN OTHER THEN
@@ -326,7 +330,7 @@ $$;
  * Purpose: Creates access roles with naming appropriate for account type
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_CREATE_ACCESS_ROLE_MULTI_ACCOUNT(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.RBAC.RBAC_CREATE_ACCESS_ROLE_MULTI_ACCOUNT(
     P_ACCOUNT_TYPE VARCHAR,
     P_ENVIRONMENT VARCHAR,        -- NULL for ENVIRONMENT/HYBRID types
     P_SUB_DOMAIN VARCHAR,         -- Sub-domain within account (e.g., PAYROLL, ORDERS)
@@ -342,10 +346,10 @@ DECLARE
     v_sql VARCHAR;
 BEGIN
     -- Build role name based on account type
-    IF P_ACCOUNT_TYPE = 'ENVIRONMENT' THEN
+    IF (P_ACCOUNT_TYPE = 'ENVIRONMENT') THEN
         -- Environment account: SRA_<SUBDOMAIN>_ACCESS
         v_role_name := 'SRA_' || UPPER(P_SUB_DOMAIN) || '_ACCESS';
-    ELSEIF P_ACCOUNT_TYPE = 'DEPARTMENT' THEN
+    ELSEIF (P_ACCOUNT_TYPE = 'DEPARTMENT') THEN
         -- Department account: SRA_<ENV>_<SUBDOMAIN>_ACCESS
         v_role_name := 'SRA_' || UPPER(P_ENVIRONMENT) || '_' || UPPER(P_SUB_DOMAIN) || '_ACCESS';
     ELSE
@@ -533,7 +537,7 @@ $$;
  *   P_ENVIRONMENT       - Environment (NULL if not applicable)
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_CREATE_SHARED_DATA_ACCESS_ROLE(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.RBAC.RBAC_CREATE_SHARED_DATA_ACCESS_ROLE(
     P_SOURCE_ACCOUNT VARCHAR,
     P_SOURCE_DOMAIN VARCHAR,
     P_ENVIRONMENT VARCHAR DEFAULT NULL,
@@ -549,7 +553,7 @@ DECLARE
     v_sql VARCHAR;
 BEGIN
     -- Build role name
-    IF P_ENVIRONMENT IS NOT NULL THEN
+    IF (P_ENVIRONMENT IS NOT NULL) THEN
         v_role_name := 'SRA_' || P_ENVIRONMENT || '_SHARED_' || UPPER(P_SOURCE_DOMAIN) || '_ACCESS';
     ELSE
         v_role_name := 'SRA_SHARED_' || UPPER(P_SOURCE_DOMAIN) || '_ACCESS';
@@ -739,9 +743,14 @@ $$;
 
 GRANT USAGE ON PROCEDURE RBAC_INITIAL_CONFIG_MULTI_ACCOUNT(VARCHAR, VARCHAR, ARRAY, ARRAY, BOOLEAN) TO ROLE ACCOUNTADMIN;
 GRANT USAGE ON PROCEDURE RBAC_CREATE_ACCESS_ROLE_MULTI_ACCOUNT(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_CREATE_OUTBOUND_SHARE(VARCHAR, VARCHAR, ARRAY, ARRAY, VARCHAR) TO ROLE SRS_DATA_SHARING_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_MOUNT_INBOUND_SHARE(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SRS_DATA_SHARING_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_CREATE_SHARED_DATA_ACCESS_ROLE(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_LIST_ACCOUNT_SHARES() TO ROLE SRS_DATA_SHARING_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_MULTI_ACCOUNT_SCIM_GUIDE(VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+
+-- NOTE: Uncomment these after creating SRS_DATA_SHARING_ADMIN role
+-- CREATE ROLE IF NOT EXISTS SRS_DATA_SHARING_ADMIN;
+-- GRANT ROLE SRS_DATA_SHARING_ADMIN TO ROLE ACCOUNTADMIN;
+-- GRANT USAGE ON PROCEDURE RBAC_CREATE_OUTBOUND_SHARE(VARCHAR, VARCHAR, ARRAY, ARRAY, VARCHAR) TO ROLE SRS_DATA_SHARING_ADMIN;
+-- GRANT USAGE ON PROCEDURE RBAC_MOUNT_INBOUND_SHARE(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SRS_DATA_SHARING_ADMIN;
+
+--GRANT USAGE ON PROCEDURE RBAC_CREATE_SHARED_DATA_ACCESS_ROLE(VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+--GRANT USAGE ON PROCEDURE RBAC_LIST_ACCOUNT_SHARES() TO ROLE SRS_DATA_SHARING_ADMIN;
+--RANT USAGE ON PROCEDURE RBAC_MULTI_ACCOUNT_SCIM_GUIDE(VARCHAR, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
 GRANT USAGE ON PROCEDURE RBAC_ORG_ACCOUNT_INVENTORY() TO ROLE ORGADMIN;

@@ -62,6 +62,13 @@ USE SCHEMA RBAC;
 -- PROCEDURE: ADMIN.RBAC.RBAC_CREATE_WAREHOUSE
 -- =============================================================================
 
+
+SHOW WAREHOUSES;
+
+  CALL RBAC_CREATE_WAREHOUSE('DEV', 'XSMALL', 60, 'TEST');
+
+
+
 CREATE OR REPLACE SECURE PROCEDURE ADMIN.RBAC.RBAC_CREATE_WAREHOUSE(
     P_ENVIRONMENT VARCHAR,
     P_WAREHOUSE_SIZE VARCHAR DEFAULT 'XSMALL',
@@ -83,7 +90,7 @@ DECLARE
     v_actions ARRAY := ARRAY_CONSTRUCT();
 BEGIN
     -- Validate environment
-    IF P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD') THEN
+    IF (P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid environment. Must be one of: DEV, TST, UAT, PPE, PRD'
@@ -91,7 +98,7 @@ BEGIN
     END IF;
     
     -- Validate warehouse size
-    IF P_WAREHOUSE_SIZE NOT IN ('XSMALL', 'SMALL', 'MEDIUM', 'LARGE', 'XLARGE', 'XXLARGE', 'XXXLARGE', 'X4LARGE', 'X5LARGE', 'X6LARGE') THEN
+    IF (P_WAREHOUSE_SIZE NOT IN ('XSMALL', 'SMALL', 'MEDIUM', 'LARGE', 'XLARGE', 'XXLARGE', 'XXXLARGE', 'X4LARGE', 'X5LARGE', 'X6LARGE')) THEN
         RETURN OBJECT_CONSTRUCT(
             'status', 'ERROR',
             'message', 'Invalid warehouse size'
@@ -99,7 +106,7 @@ BEGIN
     END IF;
     
     -- Derive names
-    IF P_WAREHOUSE_SUFFIX IS NOT NULL AND P_WAREHOUSE_SUFFIX != '' THEN
+    IF (P_WAREHOUSE_SUFFIX IS NOT NULL AND P_WAREHOUSE_SUFFIX != '') THEN
         v_warehouse_name := P_ENVIRONMENT || '_' || P_WAREHOUSE_SUFFIX || '_WH';
     ELSE
         v_warehouse_name := P_ENVIRONMENT || '_WH';
@@ -161,7 +168,7 @@ BEGIN
     -- STEP 4: Grant USAGE to SRS_DEVOPS (for non-DEV environments)
     -- DevOps needs warehouse access to deploy objects
     -- =========================================================================
-    IF NOT v_is_dev THEN
+    IF (NOT v_is_dev) THEN
         v_sql := 'GRANT USAGE ON WAREHOUSE ' || v_warehouse_name || ' TO ROLE ' || v_devops_role;
         EXECUTE IMMEDIATE v_sql;
         v_actions := ARRAY_APPEND(v_actions, OBJECT_CONSTRUCT(

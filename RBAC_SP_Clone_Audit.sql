@@ -117,15 +117,8 @@ CREATE TABLE IF NOT EXISTS ADMIN.CLONES.RBAC_CLONE_ACCESS_LOG (
     SESSION_ID VARCHAR(100) DEFAULT CURRENT_SESSION()
 );
 
--- Index for efficient querying
-CREATE INDEX IF NOT EXISTS IDX_CLONE_AUDIT_TIMESTAMP 
-ON RBAC_CLONE_AUDIT_LOG (TIMESTAMP DESC);
-
-CREATE INDEX IF NOT EXISTS IDX_CLONE_AUDIT_USER 
-ON RBAC_CLONE_AUDIT_LOG (PERFORMED_BY, TIMESTAMP DESC);
-
-CREATE INDEX IF NOT EXISTS IDX_POLICY_VIOLATIONS_STATUS 
-ON RBAC_CLONE_POLICY_VIOLATIONS (STATUS, TIMESTAMP DESC);
+-- Note: Indexes are not needed for regular Snowflake tables
+-- Snowflake automatically optimizes query performance through micro-partitioning and pruning
 
 -- #############################################################################
 -- SECTION 2: AUDIT LOGGING PROCEDURES
@@ -163,13 +156,13 @@ BEGIN
     v_audit_id := UUID_STRING();
     
     -- Check for policy violations if this is a CREATE operation
-    IF P_OPERATION = 'CREATE' AND P_STATUS = 'SUCCESS' THEN
-        CALL RBAC_CHECK_CLONE_POLICIES(
+    IF (P_OPERATION = 'CREATE' AND P_STATUS = 'SUCCESS') THEN
+        CALL ADMIN.CLONES.RBAC_CHECK_CLONE_POLICIES(
             P_CLONE_ID, P_CLONE_NAME, P_CLONE_TYPE, 
             P_ENVIRONMENT, P_SOURCE_DATABASE, P_SOURCE_SCHEMA
         ) INTO v_violation;
         
-        IF v_violation:violations IS NOT NULL THEN
+        IF (v_violation:violations IS NOT NULL) THEN
             v_policy_violations := v_violation:violations;
         END IF;
     END IF;
@@ -200,7 +193,7 @@ $$;
  * Purpose: Records when users access clone data
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_LOG_CLONE_ACCESS(
+CREATE OR REPLACE SECURE PROCEDURE ADMIN.CLONES.RBAC_LOG_CLONE_ACCESS(
     P_CLONE_ID VARCHAR,
     P_CLONE_NAME VARCHAR,
     P_ACCESS_TYPE VARCHAR,
@@ -249,69 +242,82 @@ $$;
  *   - TIME_RESTRICTION: Time-based restrictions
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE ADMIN.CLONES.RBAC_CREATE_CLONE_POLICY(
+CREATE OR REPLACE PROCEDURE ADMIN.CLONES.RBAC_CREATE_CLONE_POLICY(
     P_POLICY_NAME VARCHAR,
     P_POLICY_TYPE VARCHAR,
-    P_ENVIRONMENT VARCHAR DEFAULT NULL,
-    P_DESCRIPTION TEXT DEFAULT NULL,
     P_POLICY_DEFINITION VARIANT,
-    P_SEVERITY VARCHAR DEFAULT 'WARNING'
+    P_ENVIRONMENT VARCHAR,
+    P_DESCRIPTION TEXT,
+    P_SEVERITY VARCHAR
 )
 RETURNS VARIANT
-LANGUAGE SQL
+LANGUAGE JAVASCRIPT
 EXECUTE AS CALLER
 AS
 $$
-DECLARE
-    v_policy_id VARCHAR;
-BEGIN
-    -- Validate policy type
-    IF P_POLICY_TYPE NOT IN ('MAX_AGE', 'RESTRICTED_SOURCE', 'DATA_CLASSIFICATION', 
-                              'USER_QUOTA', 'ENVIRONMENT_RESTRICTION', 'TIME_RESTRICTION',
-                              'SENSITIVE_DATA', 'APPROVAL_REQUIRED') THEN
-        RETURN OBJECT_CONSTRUCT(
-            'status', 'ERROR',
-            'message', 'Invalid policy type. Valid types: MAX_AGE, RESTRICTED_SOURCE, DATA_CLASSIFICATION, USER_QUOTA, ENVIRONMENT_RESTRICTION, TIME_RESTRICTION, SENSITIVE_DATA, APPROVAL_REQUIRED'
-        );
-    END IF;
+    var severity = P_SEVERITY || 'WARNING';
     
-    -- Validate severity
-    IF P_SEVERITY NOT IN ('INFO', 'WARNING', 'ERROR', 'CRITICAL') THEN
-        RETURN OBJECT_CONSTRUCT(
-            'status', 'ERROR',
-            'message', 'Invalid severity. Valid values: INFO, WARNING, ERROR, CRITICAL'
-        );
-    END IF;
+    // Validate policy type
+    var validTypes = ['MAX_AGE', 'RESTRICTED_SOURCE', 'DATA_CLASSIFICATION', 
+                      'USER_QUOTA', 'ENVIRONMENT_RESTRICTION', 'TIME_RESTRICTION',
+                      'SENSITIVE_DATA', 'APPROVAL_REQUIRED'];
+    if (!validTypes.includes(P_POLICY_TYPE)) {
+        return {
+            status: 'ERROR',
+            message: 'Invalid policy type. Valid types: ' + validTypes.join(', ')
+        };
+    }
     
-    v_policy_id := UUID_STRING();
+    // Validate severity
+    var validSeverities = ['INFO', 'WARNING', 'ERROR', 'CRITICAL'];
+    if (!validSeverities.includes(severity)) {
+        return {
+            status: 'ERROR',
+            message: 'Invalid severity. Valid values: ' + validSeverities.join(', ')
+        };
+    }
     
-    INSERT INTO RBAC_CLONE_POLICIES (
-        POLICY_ID, POLICY_NAME, POLICY_TYPE, ENVIRONMENT,
-        DESCRIPTION, POLICY_DEFINITION, SEVERITY
-    ) VALUES (
-        v_policy_id, P_POLICY_NAME, P_POLICY_TYPE, P_ENVIRONMENT,
-        P_DESCRIPTION, P_POLICY_DEFINITION, P_SEVERITY
-    );
+    var policy_id = '';
+    var stmt = snowflake.createStatement({
+        sqlText: "SELECT UUID_STRING()"
+    });
+    var rs = stmt.execute();
+    if (rs.next()) {
+        policy_id = rs.getColumnValue(1);
+    }
     
-    -- Log the policy creation
-    CALL RBAC_LOG_CLONE_OPERATION(
-        'POLICY_CREATE', v_policy_id, P_POLICY_NAME, 'POLICY',
-        P_ENVIRONMENT, NULL, NULL, 'SUCCESS', NULL,
-        OBJECT_CONSTRUCT('policy_type', P_POLICY_TYPE, 'severity', P_SEVERITY)
-    );
+    // Insert policy
+    var insertStmt = snowflake.createStatement({
+        sqlText: `INSERT INTO RBAC_CLONE_POLICIES (
+            POLICY_ID, POLICY_NAME, POLICY_TYPE, ENVIRONMENT,
+            DESCRIPTION, POLICY_DEFINITION, SEVERITY
+        ) VALUES (?, ?, ?, ?, ?, PARSE_JSON(?), ?)`,
+        binds: [policy_id, P_POLICY_NAME, P_POLICY_TYPE, P_ENVIRONMENT,
+                P_DESCRIPTION, JSON.stringify(P_POLICY_DEFINITION), severity]
+    });
+    insertStmt.execute();
     
-    RETURN OBJECT_CONSTRUCT(
-        'status', 'SUCCESS',
-        'policy_id', v_policy_id,
-        'policy_name', P_POLICY_NAME,
-        'policy_type', P_POLICY_TYPE,
-        'message', 'Policy created successfully'
-    );
-
-EXCEPTION
-    WHEN OTHER THEN
-        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', SQLERRM);
-END;
+    // Log the policy creation
+    var logStmt = snowflake.createStatement({
+        sqlText: `CALL RBAC_LOG_CLONE_OPERATION(?, ?, ?, ?, ?, NULL, NULL, ?, NULL, 
+                  OBJECT_CONSTRUCT('policy_type', ?, 'severity', ?))`,
+        binds: ['POLICY_CREATE', policy_id, P_POLICY_NAME, 'POLICY',
+                P_ENVIRONMENT, 'SUCCESS', P_POLICY_TYPE, severity]
+    });
+    
+    try {
+        logStmt.execute();
+    } catch(err) {
+        // Log error but continue
+    }
+    
+    return {
+        status: 'SUCCESS',
+        policy_id: policy_id,
+        policy_name: P_POLICY_NAME,
+        policy_type: P_POLICY_TYPE,
+        message: 'Policy created successfully'
+    };
 $$;
 
 /*******************************************************************************
@@ -320,159 +326,129 @@ $$;
  * Purpose: Creates a set of recommended default compliance policies
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_SETUP_DEFAULT_CLONE_POLICIES()
+CREATE OR REPLACE PROCEDURE RBAC_SETUP_DEFAULT_CLONE_POLICIES()
 RETURNS VARIANT
-LANGUAGE SQL
+LANGUAGE JAVASCRIPT
 EXECUTE AS CALLER
 AS
 $$
-DECLARE
-    v_policies_created ARRAY := ARRAY_CONSTRUCT();
-    v_result VARIANT;
-BEGIN
-    -- Policy 1: Maximum clone age for PRD environment
-    BEGIN
-        CALL RBAC_CREATE_CLONE_POLICY(
-            'PRD_MAX_CLONE_AGE_7_DAYS',
-            'MAX_AGE',
-            'PRD',
-            'Production clones must not exceed 7 days to minimize data exposure risk',
-            OBJECT_CONSTRUCT('max_age_days', 7, 'action', 'WARN_AND_LOG'),
-            'WARNING'
-        ) INTO v_result;
-        IF v_result:status = 'SUCCESS' THEN
-            v_policies_created := ARRAY_APPEND(v_policies_created, v_result:policy_name);
-        END IF;
-    EXCEPTION WHEN OTHER THEN NULL;
-    END;
+    var policies_created = [];
     
-    -- Policy 2: Maximum clone age for UAT
-    BEGIN
-        CALL RBAC_CREATE_CLONE_POLICY(
-            'UAT_MAX_CLONE_AGE_14_DAYS',
-            'MAX_AGE',
-            'UAT',
-            'UAT clones must not exceed 14 days',
-            OBJECT_CONSTRUCT('max_age_days', 14, 'action', 'WARN_AND_LOG'),
-            'WARNING'
-        ) INTO v_result;
-        IF v_result:status = 'SUCCESS' THEN
-            v_policies_created := ARRAY_APPEND(v_policies_created, v_result:policy_name);
-        END IF;
-    EXCEPTION WHEN OTHER THEN NULL;
-    END;
+    // Helper function to create policy
+    function createPolicy(name, type, definition, environment, description, severity) {
+        try {
+            var stmt = snowflake.createStatement({
+                sqlText: `CALL RBAC_CREATE_CLONE_POLICY(?, ?, ?, ?, ?, ?)`,
+                binds: [name, type, definition, environment, description, severity]
+            });
+            var rs = stmt.execute();
+            if (rs.next()) {
+                var result = rs.getColumnValue(1);
+                if (result.status === 'SUCCESS') {
+                    policies_created.push(result.policy_name);
+                }
+            }
+        } catch(err) {
+            // Continue on error
+        }
+    }
     
-    -- Policy 3: Restrict cloning of PII schemas
-    BEGIN
-        CALL RBAC_CREATE_CLONE_POLICY(
-            'RESTRICT_PII_SCHEMA_CLONES',
-            'SENSITIVE_DATA',
-            NULL,
-            'Schemas containing PII data require approval before cloning',
-            OBJECT_CONSTRUCT(
-                'restricted_schemas', ARRAY_CONSTRUCT('PII', 'SENSITIVE', 'CONFIDENTIAL', 'PHI', 'PCI'),
-                'action', 'REQUIRE_APPROVAL',
-                'approvers', ARRAY_CONSTRUCT('SRS_SECURITY_ADMIN', 'SRS_ACCOUNT_ADMIN')
-            ),
-            'CRITICAL'
-        ) INTO v_result;
-        IF v_result:status = 'SUCCESS' THEN
-            v_policies_created := ARRAY_APPEND(v_policies_created, v_result:policy_name);
-        END IF;
-    EXCEPTION WHEN OTHER THEN NULL;
-    END;
-    
-    -- Policy 4: No PRD database clones
-    BEGIN
-        CALL RBAC_CREATE_CLONE_POLICY(
-            'NO_PRD_DATABASE_CLONES',
-            'ENVIRONMENT_RESTRICTION',
-            'PRD',
-            'Database-level clones are not permitted in production',
-            OBJECT_CONSTRUCT('restricted_clone_types', ARRAY_CONSTRUCT('DATABASE'), 'action', 'BLOCK'),
-            'ERROR'
-        ) INTO v_result;
-        IF v_result:status = 'SUCCESS' THEN
-            v_policies_created := ARRAY_APPEND(v_policies_created, v_result:policy_name);
-        END IF;
-    EXCEPTION WHEN OTHER THEN NULL;
-    END;
-    
-    -- Policy 5: Business hours only for PRD
-    BEGIN
-        CALL RBAC_CREATE_CLONE_POLICY(
-            'PRD_BUSINESS_HOURS_ONLY',
-            'TIME_RESTRICTION',
-            'PRD',
-            'Production clones can only be created during business hours (8 AM - 6 PM)',
-            OBJECT_CONSTRUCT(
-                'allowed_hours_start', 8,
-                'allowed_hours_end', 18,
-                'allowed_days', ARRAY_CONSTRUCT('MON', 'TUE', 'WED', 'THU', 'FRI'),
-                'timezone', 'America/New_York',
-                'action', 'BLOCK'
-            ),
-            'ERROR'
-        ) INTO v_result;
-        IF v_result:status = 'SUCCESS' THEN
-            v_policies_created := ARRAY_APPEND(v_policies_created, v_result:policy_name);
-        END IF;
-    EXCEPTION WHEN OTHER THEN NULL;
-    END;
-    
-    -- Policy 6: Maximum total clones per user across all environments
-    BEGIN
-        CALL RBAC_CREATE_CLONE_POLICY(
-            'MAX_TOTAL_USER_CLONES_10',
-            'USER_QUOTA',
-            NULL,
-            'Users cannot have more than 10 total active clones across all environments',
-            OBJECT_CONSTRUCT('max_total_clones', 10, 'action', 'BLOCK'),
-            'ERROR'
-        ) INTO v_result;
-        IF v_result:status = 'SUCCESS' THEN
-            v_policies_created := ARRAY_APPEND(v_policies_created, v_result:policy_name);
-        END IF;
-    EXCEPTION WHEN OTHER THEN NULL;
-    END;
-    
-    -- Policy 7: Audit trail retention
-    BEGIN
-        CALL RBAC_CREATE_CLONE_POLICY(
-            'AUDIT_RETENTION_365_DAYS',
-            'DATA_CLASSIFICATION',
-            NULL,
-            'Clone audit records must be retained for 365 days for compliance',
-            OBJECT_CONSTRUCT('retention_days', 365, 'applies_to', 'AUDIT_LOG'),
-            'INFO'
-        ) INTO v_result;
-        IF v_result:status = 'SUCCESS' THEN
-            v_policies_created := ARRAY_APPEND(v_policies_created, v_result:policy_name);
-        END IF;
-    EXCEPTION WHEN OTHER THEN NULL;
-    END;
-    
-    RETURN OBJECT_CONSTRUCT(
-        'status', 'SUCCESS',
-        'policies_created', v_policies_created,
-        'count', ARRAY_SIZE(v_policies_created),
-        'message', 'Default policies have been created'
+    // Policy 1: Maximum clone age for PRD environment
+    createPolicy(
+        'PRD_MAX_CLONE_AGE_7_DAYS',
+        'MAX_AGE',
+        {max_age_days: 7, action: 'WARN_AND_LOG'},
+        'PRD',
+        'Production clones must not exceed 7 days to minimize data exposure risk',
+        'WARNING'
     );
-
-EXCEPTION
-    WHEN OTHER THEN
-        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', SQLERRM);
-END;
+    
+    // Policy 2: Maximum clone age for UAT
+    createPolicy(
+        'UAT_MAX_CLONE_AGE_14_DAYS',
+        'MAX_AGE',
+        {max_age_days: 14, action: 'WARN_AND_LOG'},
+        'UAT',
+        'UAT clones must not exceed 14 days',
+        'WARNING'
+    );
+    
+    // Policy 3: Restrict cloning of PII schemas
+    createPolicy(
+        'RESTRICT_PII_SCHEMA_CLONES',
+        'SENSITIVE_DATA',
+        {
+            restricted_schemas: ['PII', 'SENSITIVE', 'CONFIDENTIAL', 'PHI', 'PCI'],
+            action: 'REQUIRE_APPROVAL',
+            approvers: ['SRS_SECURITY_ADMIN', 'SRS_ACCOUNT_ADMIN']
+        },
+        null,
+        'Schemas containing PII data require approval before cloning',
+        'CRITICAL'
+    );
+    
+    // Policy 4: No PRD database clones
+    createPolicy(
+        'NO_PRD_DATABASE_CLONES',
+        'ENVIRONMENT_RESTRICTION',
+        {restricted_clone_types: ['DATABASE'], action: 'BLOCK'},
+        'PRD',
+        'Database-level clones are not permitted in production',
+        'ERROR'
+    );
+    
+    // Policy 5: Business hours only for PRD
+    createPolicy(
+        'PRD_BUSINESS_HOURS_ONLY',
+        'TIME_RESTRICTION',
+        {
+            allowed_hours_start: 8,
+            allowed_hours_end: 18,
+            allowed_days: ['MON', 'TUE', 'WED', 'THU', 'FRI'],
+            timezone: 'America/New_York',
+            action: 'BLOCK'
+        },
+        'PRD',
+        'Production clones can only be created during business hours (8 AM - 6 PM)',
+        'ERROR'
+    );
+    
+    // Policy 6: Maximum total clones per user across all environments
+    createPolicy(
+        'MAX_TOTAL_USER_CLONES_10',
+        'USER_QUOTA',
+        {max_total_clones: 10, action: 'BLOCK'},
+        null,
+        'Users cannot have more than 10 total active clones across all environments',
+        'ERROR'
+    );
+    
+    // Policy 7: Audit trail retention
+    createPolicy(
+        'AUDIT_RETENTION_365_DAYS',
+        'DATA_CLASSIFICATION',
+        {retention_days: 365, applies_to: 'AUDIT_LOG'},
+        null,
+        'Clone audit records must be retained for 365 days for compliance',
+        'INFO'
+    );
+    
+    return {
+        status: 'SUCCESS',
+        policies_created: policies_created,
+        count: policies_created.length,
+        message: 'Default policies have been created'
+    };
 $$;
 
 /*******************************************************************************
  * RBAC STORED PROCEDURE: List Clone Policies
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_LIST_CLONE_POLICIES(
-    P_ENVIRONMENT VARCHAR DEFAULT NULL,
-    P_POLICY_TYPE VARCHAR DEFAULT NULL,
-    P_ACTIVE_ONLY BOOLEAN DEFAULT TRUE
+CREATE OR REPLACE PROCEDURE ADMIN.CLONES.RBAC_LIST_CLONE_POLICIES(
+    P_ENVIRONMENT VARCHAR,
+    P_POLICY_TYPE VARCHAR,
+    P_ACTIVE_ONLY BOOLEAN
 )
 RETURNS TABLE (
     POLICY_ID VARCHAR,
@@ -485,7 +461,6 @@ RETURNS TABLE (
     CREATED_AT TIMESTAMP_NTZ
 )
 LANGUAGE SQL
-EXECUTE AS CALLER
 AS
 $$
 DECLARE
@@ -515,80 +490,100 @@ $$;
  * RBAC STORED PROCEDURE: Enable/Disable Policy
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_SET_POLICY_STATUS(
+CREATE OR REPLACE PROCEDURE RBAC_SET_POLICY_STATUS(
     P_POLICY_NAME VARCHAR,
     P_IS_ACTIVE BOOLEAN
 )
 RETURNS VARIANT
-LANGUAGE SQL
+LANGUAGE JAVASCRIPT
 EXECUTE AS CALLER
 AS
 $$
-BEGIN
-    UPDATE RBAC_CLONE_POLICIES
-    SET IS_ACTIVE = P_IS_ACTIVE,
-        UPDATED_BY = CURRENT_USER(),
-        UPDATED_AT = CURRENT_TIMESTAMP()
-    WHERE POLICY_NAME = P_POLICY_NAME;
+    // Update the policy status
+    var updateStmt = snowflake.createStatement({
+        sqlText: `UPDATE RBAC_CLONE_POLICIES
+                  SET IS_ACTIVE = ?,
+                      UPDATED_BY = CURRENT_USER(),
+                      UPDATED_AT = CURRENT_TIMESTAMP()
+                  WHERE POLICY_NAME = ?`,
+        binds: [P_IS_ACTIVE, P_POLICY_NAME]
+    });
+    updateStmt.execute();
     
-    IF (SELECT COUNT(*) FROM RBAC_CLONE_POLICIES WHERE POLICY_NAME = P_POLICY_NAME) = 0 THEN
-        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Policy not found');
-    END IF;
+    // Check if policy exists
+    var checkStmt = snowflake.createStatement({
+        sqlText: `SELECT COUNT(*) AS CNT FROM RBAC_CLONE_POLICIES WHERE POLICY_NAME = ?`,
+        binds: [P_POLICY_NAME]
+    });
+    var rs = checkStmt.execute();
+    rs.next();
     
-    RETURN OBJECT_CONSTRUCT(
-        'status', 'SUCCESS',
-        'policy_name', P_POLICY_NAME,
-        'is_active', P_IS_ACTIVE,
-        'message', 'Policy status updated'
-    );
-
-EXCEPTION
-    WHEN OTHER THEN
-        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', SQLERRM);
-END;
+    if (rs.getColumnValue(1) === 0) {
+        return {
+            status: 'ERROR',
+            message: 'Policy not found'
+        };
+    }
+    
+    return {
+        status: 'SUCCESS',
+        policy_name: P_POLICY_NAME,
+        is_active: P_IS_ACTIVE,
+        message: 'Policy status updated'
+    };
 $$;
 
 /*******************************************************************************
  * RBAC STORED PROCEDURE: Delete Policy
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_DELETE_CLONE_POLICY(
+CREATE OR REPLACE PROCEDURE ADMIN.CLONES.RBAC_DELETE_CLONE_POLICY(
     P_POLICY_NAME VARCHAR
 )
 RETURNS VARIANT
-LANGUAGE SQL
+LANGUAGE JAVASCRIPT
 EXECUTE AS CALLER
 AS
 $$
-DECLARE
-    v_policy_id VARCHAR;
-BEGIN
-    SELECT POLICY_ID INTO v_policy_id
-    FROM RBAC_CLONE_POLICIES
-    WHERE POLICY_NAME = P_POLICY_NAME;
+    // Get policy ID
+    var stmt = snowflake.createStatement({
+        sqlText: `SELECT POLICY_ID FROM RBAC_CLONE_POLICIES WHERE POLICY_NAME = ?`,
+        binds: [P_POLICY_NAME]
+    });
+    var rs = stmt.execute();
     
-    IF v_policy_id IS NULL THEN
-        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Policy not found');
-    END IF;
+    if (!rs.next()) {
+        return {
+            status: 'ERROR',
+            message: 'Policy not found'
+        };
+    }
     
-    DELETE FROM RBAC_CLONE_POLICIES WHERE POLICY_NAME = P_POLICY_NAME;
+    var policy_id = rs.getColumnValue(1);
     
-    -- Log deletion
-    CALL RBAC_LOG_CLONE_OPERATION(
-        'POLICY_DELETE', v_policy_id, P_POLICY_NAME, 'POLICY',
-        NULL, NULL, NULL, 'SUCCESS', NULL, NULL
-    );
+    // Delete policy
+    var deleteStmt = snowflake.createStatement({
+        sqlText: `DELETE FROM RBAC_CLONE_POLICIES WHERE POLICY_NAME = ?`,
+        binds: [P_POLICY_NAME]
+    });
+    deleteStmt.execute();
     
-    RETURN OBJECT_CONSTRUCT(
-        'status', 'SUCCESS',
-        'policy_name', P_POLICY_NAME,
-        'message', 'Policy deleted'
-    );
-
-EXCEPTION
-    WHEN OTHER THEN
-        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', SQLERRM);
-END;
+    // Log deletion
+    try {
+        var logStmt = snowflake.createStatement({
+            sqlText: `CALL RBAC_LOG_CLONE_OPERATION(?, ?, ?, ?, NULL, NULL, NULL, ?, NULL, NULL)`,
+            binds: ['POLICY_DELETE', policy_id, P_POLICY_NAME, 'POLICY', 'SUCCESS']
+        });
+        logStmt.execute();
+    } catch(err) {
+        // Continue even if logging fails
+    }
+    
+    return {
+        status: 'SUCCESS',
+        policy_name: P_POLICY_NAME,
+        message: 'Policy deleted'
+    };
 $$;
 
 -- #############################################################################
@@ -602,7 +597,7 @@ $$;
  *          Returns any violations found
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_CHECK_CLONE_POLICIES(
+CREATE OR REPLACE PROCEDURE ADMIN.CLONES.RBAC_CHECK_CLONE_POLICIES(
     P_CLONE_ID VARCHAR,
     P_CLONE_NAME VARCHAR,
     P_CLONE_TYPE VARCHAR,
@@ -611,143 +606,149 @@ CREATE OR REPLACE SECURE PROCEDURE RBAC_CHECK_CLONE_POLICIES(
     P_SOURCE_SCHEMA VARCHAR
 )
 RETURNS VARIANT
-LANGUAGE SQL
+LANGUAGE JAVASCRIPT
 EXECUTE AS CALLER
 AS
 $$
-DECLARE
-    v_violations ARRAY := ARRAY_CONSTRUCT();
-    v_current_user VARCHAR := CURRENT_USER();
-    v_total_user_clones INTEGER;
-    v_current_hour INTEGER;
-    v_current_day VARCHAR;
-    v_policy OBJECT;
-    v_definition VARIANT;
-    v_violation OBJECT;
-    v_should_block BOOLEAN := FALSE;
-BEGIN
-    -- Get current time info
-    v_current_hour := HOUR(CURRENT_TIMESTAMP());
-    v_current_day := DAYNAME(CURRENT_DATE());
+    var violations = [];
+    var shouldBlock = false;
     
-    -- Get total user clones
-    SELECT COUNT(*) INTO v_total_user_clones
-    FROM RBAC_CLONE_REGISTRY
-    WHERE CREATED_BY = v_current_user AND STATUS = 'ACTIVE';
+    // Get current user
+    var userStmt = snowflake.createStatement({
+        sqlText: "SELECT CURRENT_USER()"
+    });
+    var userRs = userStmt.execute();
+    userRs.next();
+    var currentUser = userRs.getColumnValue(1);
     
-    -- Check each active policy
-    FOR policy_rec IN (
-        SELECT POLICY_ID, POLICY_NAME, POLICY_TYPE, ENVIRONMENT, POLICY_DEFINITION, SEVERITY
-        FROM RBAC_CLONE_POLICIES
-        WHERE IS_ACTIVE = TRUE
-          AND (ENVIRONMENT IS NULL OR ENVIRONMENT = P_ENVIRONMENT)
-    ) DO
-        v_definition := policy_rec.POLICY_DEFINITION;
-        v_violation := NULL;
+    // Get current time info
+    var timeStmt = snowflake.createStatement({
+        sqlText: "SELECT HOUR(CURRENT_TIMESTAMP()) AS HR, DAYNAME(CURRENT_DATE()) AS DAY"
+    });
+    var timeRs = timeStmt.execute();
+    timeRs.next();
+    var currentHour = timeRs.getColumnValue('HR');
+    var currentDay = timeRs.getColumnValue('DAY');
+    
+    // Get total user clones
+    var cloneCountStmt = snowflake.createStatement({
+        sqlText: "SELECT COUNT(*) AS CNT FROM RBAC_CLONE_REGISTRY WHERE CREATED_BY = ? AND STATUS = 'ACTIVE'",
+        binds: [currentUser]
+    });
+    var cloneCountRs = cloneCountStmt.execute();
+    cloneCountRs.next();
+    var totalUserClones = cloneCountRs.getColumnValue('CNT');
+    
+    // Get all active policies
+    var policiesStmt = snowflake.createStatement({
+        sqlText: `SELECT POLICY_ID, POLICY_NAME, POLICY_TYPE, ENVIRONMENT, POLICY_DEFINITION, SEVERITY
+                  FROM RBAC_CLONE_POLICIES
+                  WHERE IS_ACTIVE = TRUE
+                    AND (ENVIRONMENT IS NULL OR ENVIRONMENT = ?)`,
+        binds: [P_ENVIRONMENT]
+    });
+    var policiesRs = policiesStmt.execute();
+    
+    while (policiesRs.next()) {
+        var policyId = policiesRs.getColumnValue('POLICY_ID');
+        var policyName = policiesRs.getColumnValue('POLICY_NAME');
+        var policyType = policiesRs.getColumnValue('POLICY_TYPE');
+        var severity = policiesRs.getColumnValue('SEVERITY');
+        var definition = policiesRs.getColumnValue('POLICY_DEFINITION');
         
-        -- Check policy based on type
-        CASE policy_rec.POLICY_TYPE
-            
-            -- Environment restriction
-            WHEN 'ENVIRONMENT_RESTRICTION' THEN
-                IF ARRAY_CONTAINS(P_CLONE_TYPE::VARIANT, v_definition:restricted_clone_types) THEN
-                    v_violation := OBJECT_CONSTRUCT(
-                        'policy_name', policy_rec.POLICY_NAME,
-                        'policy_type', policy_rec.POLICY_TYPE,
-                        'severity', policy_rec.SEVERITY,
-                        'message', P_CLONE_TYPE || ' clones are not allowed in ' || P_ENVIRONMENT,
-                        'action', v_definition:action
-                    );
-                    IF v_definition:action = 'BLOCK' THEN
-                        v_should_block := TRUE;
-                    END IF;
-                END IF;
-            
-            -- User quota
-            WHEN 'USER_QUOTA' THEN
-                IF v_total_user_clones >= v_definition:max_total_clones::INTEGER THEN
-                    v_violation := OBJECT_CONSTRUCT(
-                        'policy_name', policy_rec.POLICY_NAME,
-                        'policy_type', policy_rec.POLICY_TYPE,
-                        'severity', policy_rec.SEVERITY,
-                        'message', 'Total clone limit exceeded. You have ' || v_total_user_clones || ' clones (max: ' || v_definition:max_total_clones || ')',
-                        'action', v_definition:action
-                    );
-                    IF v_definition:action = 'BLOCK' THEN
-                        v_should_block := TRUE;
-                    END IF;
-                END IF;
-            
-            -- Time restriction
-            WHEN 'TIME_RESTRICTION' THEN
-                IF v_current_hour < v_definition:allowed_hours_start::INTEGER 
-                   OR v_current_hour >= v_definition:allowed_hours_end::INTEGER
-                   OR NOT ARRAY_CONTAINS(v_current_day::VARIANT, v_definition:allowed_days) THEN
-                    v_violation := OBJECT_CONSTRUCT(
-                        'policy_name', policy_rec.POLICY_NAME,
-                        'policy_type', policy_rec.POLICY_TYPE,
-                        'severity', policy_rec.SEVERITY,
-                        'message', 'Clone creation not allowed at this time. Allowed: ' || 
-                                   v_definition:allowed_hours_start || ':00 - ' || 
-                                   v_definition:allowed_hours_end || ':00 on ' ||
-                                   ARRAY_TO_STRING(v_definition:allowed_days, ', '),
-                        'action', v_definition:action
-                    );
-                    IF v_definition:action = 'BLOCK' THEN
-                        v_should_block := TRUE;
-                    END IF;
-                END IF;
-            
-            -- Sensitive data
-            WHEN 'SENSITIVE_DATA' THEN
-                IF P_SOURCE_SCHEMA IS NOT NULL THEN
-                    FOR i IN 0 TO ARRAY_SIZE(v_definition:restricted_schemas) - 1 DO
-                        IF CONTAINS(UPPER(P_SOURCE_SCHEMA), v_definition:restricted_schemas[i]::VARCHAR) THEN
-                            v_violation := OBJECT_CONSTRUCT(
-                                'policy_name', policy_rec.POLICY_NAME,
-                                'policy_type', policy_rec.POLICY_TYPE,
-                                'severity', policy_rec.SEVERITY,
-                                'message', 'Schema contains sensitive data and requires approval',
-                                'action', v_definition:action,
-                                'approvers', v_definition:approvers
-                            );
-                            IF v_definition:action = 'BLOCK' OR v_definition:action = 'REQUIRE_APPROVAL' THEN
-                                v_should_block := TRUE;
-                            END IF;
-                        END IF;
-                    END FOR;
-                END IF;
-            
-            ELSE
-                NULL;
-        END CASE;
+        var violation = null;
         
-        -- Record violation if found
-        IF v_violation IS NOT NULL THEN
-            v_violations := ARRAY_APPEND(v_violations, v_violation);
+        // Check policy based on type
+        if (policyType === 'ENVIRONMENT_RESTRICTION') {
+            if (definition.restricted_clone_types && definition.restricted_clone_types.includes(P_CLONE_TYPE)) {
+                violation = {
+                    policy_name: policyName,
+                    policy_type: policyType,
+                    severity: severity,
+                    message: P_CLONE_TYPE + ' clones are not allowed in ' + P_ENVIRONMENT,
+                    action: definition.action
+                };
+                if (definition.action === 'BLOCK') {
+                    shouldBlock = true;
+                }
+            }
+        } else if (policyType === 'USER_QUOTA') {
+            if (totalUserClones >= definition.max_total_clones) {
+                violation = {
+                    policy_name: policyName,
+                    policy_type: policyType,
+                    severity: severity,
+                    message: 'Total clone limit exceeded. You have ' + totalUserClones + ' clones (max: ' + definition.max_total_clones + ')',
+                    action: definition.action
+                };
+                if (definition.action === 'BLOCK') {
+                    shouldBlock = true;
+                }
+            }
+        } else if (policyType === 'TIME_RESTRICTION') {
+            var outsideHours = currentHour < definition.allowed_hours_start || currentHour >= definition.allowed_hours_end;
+            var wrongDay = !definition.allowed_days || !definition.allowed_days.includes(currentDay.substring(0, 3).toUpperCase());
             
-            -- Log the violation
-            INSERT INTO RBAC_CLONE_POLICY_VIOLATIONS (
-                POLICY_ID, POLICY_NAME, CLONE_ID, CLONE_NAME,
-                VIOLATED_BY, VIOLATION_DETAILS, SEVERITY
-            ) VALUES (
-                policy_rec.POLICY_ID, policy_rec.POLICY_NAME, P_CLONE_ID, P_CLONE_NAME,
-                v_current_user, v_violation, policy_rec.SEVERITY
-            );
-        END IF;
-    END FOR;
+            if (outsideHours || wrongDay) {
+                violation = {
+                    policy_name: policyName,
+                    policy_type: policyType,
+                    severity: severity,
+                    message: 'Clone creation not allowed at this time. Allowed: ' + definition.allowed_hours_start + ':00 - ' + definition.allowed_hours_end + ':00',
+                    action: definition.action
+                };
+                if (definition.action === 'BLOCK') {
+                    shouldBlock = true;
+                }
+            }
+        } else if (policyType === 'SENSITIVE_DATA') {
+            if (P_SOURCE_SCHEMA && definition.restricted_schemas) {
+                for (var i = 0; i < definition.restricted_schemas.length; i++) {
+                    if (P_SOURCE_SCHEMA.toUpperCase().includes(definition.restricted_schemas[i])) {
+                        violation = {
+                            policy_name: policyName,
+                            policy_type: policyType,
+                            severity: severity,
+                            message: 'Schema contains sensitive data and requires approval',
+                            action: definition.action,
+                            approvers: definition.approvers
+                        };
+                        if (definition.action === 'BLOCK' || definition.action === 'REQUIRE_APPROVAL') {
+                            shouldBlock = true;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Record violation if found
+        if (violation) {
+            violations.push(violation);
+            
+            // Log the violation
+            try {
+                var insertStmt = snowflake.createStatement({
+                    sqlText: `INSERT INTO RBAC_CLONE_POLICY_VIOLATIONS (
+                        POLICY_ID, POLICY_NAME, CLONE_ID, CLONE_NAME,
+                        VIOLATED_BY, VIOLATION_DETAILS, SEVERITY
+                    ) VALUES (?, ?, ?, ?, ?, PARSE_JSON(?), ?)`,
+                    binds: [policyId, policyName, P_CLONE_ID, P_CLONE_NAME,
+                            currentUser, JSON.stringify(violation), severity]
+                });
+                insertStmt.execute();
+            } catch(err) {
+                // Continue even if logging fails
+            }
+        }
+    }
     
-    RETURN OBJECT_CONSTRUCT(
-        'has_violations', ARRAY_SIZE(v_violations) > 0,
-        'should_block', v_should_block,
-        'violations_count', ARRAY_SIZE(v_violations),
-        'violations', v_violations
-    );
-
-EXCEPTION
-    WHEN OTHER THEN
-        RETURN OBJECT_CONSTRUCT('has_violations', FALSE, 'error', SQLERRM);
-END;
+    return {
+        has_violations: violations.length > 0,
+        should_block: shouldBlock,
+        violations_count: violations.length,
+        violations: violations
+    };
 $$;
 
 /*******************************************************************************
@@ -756,72 +757,91 @@ $$;
  * Purpose: Checks all existing clones for policy compliance
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE ADMIN.CLONES.RBAC_CHECK_CLONE_COMPLIANCE(
-    P_ENVIRONMENT VARCHAR DEFAULT NULL
+CREATE OR REPLACE PROCEDURE ADMIN.CLONES.RBAC_CHECK_CLONE_COMPLIANCE(
+    P_ENVIRONMENT VARCHAR
 )
 RETURNS VARIANT
-LANGUAGE SQL
+LANGUAGE JAVASCRIPT
 EXECUTE AS CALLER
 AS
 $$
-DECLARE
-    v_violations ARRAY := ARRAY_CONSTRUCT();
-    v_compliant_count INTEGER := 0;
-    v_non_compliant_count INTEGER := 0;
-    v_clone OBJECT;
-    v_age_days INTEGER;
-    v_max_age INTEGER;
-BEGIN
-    -- Check each active clone
-    FOR clone_rec IN (
-        SELECT 
-            c.CLONE_ID, c.CLONE_NAME, c.CLONE_TYPE, c.ENVIRONMENT,
-            c.SOURCE_DATABASE, c.SOURCE_SCHEMA, c.CREATED_BY, c.CREATED_AT,
-            DATEDIFF(DAY, c.CREATED_AT, CURRENT_TIMESTAMP()) AS AGE_DAYS
-        FROM RBAC_CLONE_REGISTRY c
-        WHERE c.STATUS = 'ACTIVE'
-          AND (P_ENVIRONMENT IS NULL OR c.ENVIRONMENT = P_ENVIRONMENT)
-    ) DO
-        v_age_days := clone_rec.AGE_DAYS;
+    var violations = [];
+    var compliantCount = 0;
+    var nonCompliantCount = 0;
+    
+    // Get all active clones
+    var clonesStmt = snowflake.createStatement({
+        sqlText: `SELECT 
+            CLONE_ID, CLONE_NAME, CLONE_TYPE, ENVIRONMENT,
+            SOURCE_DATABASE, SOURCE_SCHEMA, CREATED_BY, CREATED_AT,
+            DATEDIFF(DAY, CREATED_AT, CURRENT_TIMESTAMP()) AS AGE_DAYS
+        FROM RBAC_CLONE_REGISTRY
+        WHERE STATUS = 'ACTIVE'
+          AND (? IS NULL OR ENVIRONMENT = ?)`,
+        binds: [P_ENVIRONMENT, P_ENVIRONMENT]
+    });
+    var clonesRs = clonesStmt.execute();
+    
+    while (clonesRs.next()) {
+        var cloneId = clonesRs.getColumnValue('CLONE_ID');
+        var cloneName = clonesRs.getColumnValue('CLONE_NAME');
+        var environment = clonesRs.getColumnValue('ENVIRONMENT');
+        var createdBy = clonesRs.getColumnValue('CREATED_BY');
+        var ageDays = clonesRs.getColumnValue('AGE_DAYS');
         
-        -- Check MAX_AGE policies
-        FOR policy_rec IN (
-            SELECT POLICY_NAME, POLICY_DEFINITION, SEVERITY
+        var hasViolation = false;
+        
+        // Check MAX_AGE policies
+        var policiesStmt = snowflake.createStatement({
+            sqlText: `SELECT POLICY_NAME, POLICY_DEFINITION, SEVERITY
             FROM RBAC_CLONE_POLICIES
             WHERE IS_ACTIVE = TRUE
               AND POLICY_TYPE = 'MAX_AGE'
-              AND (ENVIRONMENT IS NULL OR ENVIRONMENT = clone_rec.ENVIRONMENT)
-        ) DO
-            v_max_age := policy_rec.POLICY_DEFINITION:max_age_days::INTEGER;
+              AND (ENVIRONMENT IS NULL OR ENVIRONMENT = ?)`,
+            binds: [environment]
+        });
+        var policiesRs = policiesStmt.execute();
+        
+        while (policiesRs.next()) {
+            var policyName = policiesRs.getColumnValue('POLICY_NAME');
+            var definition = policiesRs.getColumnValue('POLICY_DEFINITION');
+            var severity = policiesRs.getColumnValue('SEVERITY');
+            var maxAge = definition.max_age_days;
             
-            IF v_age_days > v_max_age THEN
-                v_violations := ARRAY_APPEND(v_violations, OBJECT_CONSTRUCT(
-                    'clone_name', clone_rec.CLONE_NAME,
-                    'clone_owner', clone_rec.CREATED_BY,
-                    'policy_name', policy_rec.POLICY_NAME,
-                    'violation', 'Clone age (' || v_age_days || ' days) exceeds maximum (' || v_max_age || ' days)',
-                    'severity', policy_rec.SEVERITY,
-                    'environment', clone_rec.ENVIRONMENT
-                ));
-                v_non_compliant_count := v_non_compliant_count + 1;
-            ELSE
-                v_compliant_count := v_compliant_count + 1;
-            END IF;
-        END FOR;
-    END FOR;
+            if (ageDays > maxAge) {
+                violations.push({
+                    clone_name: cloneName,
+                    clone_owner: createdBy,
+                    policy_name: policyName,
+                    violation: 'Clone age (' + ageDays + ' days) exceeds maximum (' + maxAge + ' days)',
+                    severity: severity,
+                    environment: environment
+                });
+                hasViolation = true;
+            }
+        }
+        
+        if (hasViolation) {
+            nonCompliantCount++;
+        } else {
+            compliantCount++;
+        }
+    }
     
-    RETURN OBJECT_CONSTRUCT(
-        'status', 'SUCCESS',
-        'compliant_clones', v_compliant_count,
-        'non_compliant_clones', v_non_compliant_count,
-        'violations', v_violations,
-        'scan_timestamp', CURRENT_TIMESTAMP()
-    );
-
-EXCEPTION
-    WHEN OTHER THEN
-        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', SQLERRM);
-END;
+    var tsStmt = snowflake.createStatement({
+        sqlText: "SELECT CURRENT_TIMESTAMP()"
+    });
+    var tsRs = tsStmt.execute();
+    tsRs.next();
+    var timestamp = tsRs.getColumnValue(1);
+    
+    return {
+        status: 'SUCCESS',
+        compliant_clones: compliantCount,
+        non_compliant_clones: nonCompliantCount,
+        violations: violations,
+        scan_timestamp: timestamp
+    };
 $$;
 
 -- #############################################################################
@@ -832,13 +852,13 @@ $$;
  * RBAC STORED PROCEDURE: Get Clone Audit Log
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE ADMIN.CLONES.RBAC_GET_CLONE_AUDIT_LOG(
-    P_START_DATE DATE DEFAULT NULL,
-    P_END_DATE DATE DEFAULT NULL,
-    P_OPERATION VARCHAR DEFAULT NULL,
-    P_USER VARCHAR DEFAULT NULL,
-    P_ENVIRONMENT VARCHAR DEFAULT NULL,
-    P_LIMIT INTEGER DEFAULT 1000
+CREATE OR REPLACE PROCEDURE ADMIN.CLONES.RBAC_GET_CLONE_AUDIT_LOG(
+    P_START_DATE DATE,
+    P_END_DATE DATE,
+    P_OPERATION VARCHAR,
+    P_USER VARCHAR,
+    P_ENVIRONMENT VARCHAR,
+    P_LIMIT INTEGER
 )
 RETURNS TABLE (
     AUDIT_ID VARCHAR,
@@ -851,16 +871,17 @@ RETURNS TABLE (
     POLICY_VIOLATIONS INTEGER
 )
 LANGUAGE SQL
-EXECUTE AS CALLER
 AS
 $$
 DECLARE
+    res RESULTSET;
     v_start TIMESTAMP_NTZ;
     v_end TIMESTAMP_NTZ;
-    res RESULTSET;
+    v_limit INTEGER;
 BEGIN
     v_start := COALESCE(P_START_DATE::TIMESTAMP_NTZ, DATEADD(DAY, -30, CURRENT_TIMESTAMP()));
     v_end := COALESCE(P_END_DATE::TIMESTAMP_NTZ, CURRENT_TIMESTAMP());
+    v_limit := COALESCE(P_LIMIT, 1000);
     
     res := (
         SELECT 
@@ -878,7 +899,7 @@ BEGIN
           AND (P_USER IS NULL OR PERFORMED_BY = P_USER)
           AND (P_ENVIRONMENT IS NULL OR ENVIRONMENT = P_ENVIRONMENT)
         ORDER BY TIMESTAMP DESC
-        LIMIT P_LIMIT
+        LIMIT 1000
     );
     RETURN TABLE(res);
 END;
@@ -888,11 +909,11 @@ $$;
  * RBAC STORED PROCEDURE: Get Policy Violations Report
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_GET_POLICY_VIOLATIONS(
-    P_STATUS VARCHAR DEFAULT 'OPEN',
-    P_SEVERITY VARCHAR DEFAULT NULL,
-    P_START_DATE DATE DEFAULT NULL,
-    P_END_DATE DATE DEFAULT NULL
+CREATE OR REPLACE PROCEDURE ADMIN.CLONES.RBAC_GET_POLICY_VIOLATIONS(
+    P_STATUS VARCHAR,
+    P_SEVERITY VARCHAR,
+    P_START_DATE DATE,
+    P_END_DATE DATE
 )
 RETURNS TABLE (
     VIOLATION_ID VARCHAR,
@@ -905,13 +926,12 @@ RETURNS TABLE (
     RESOLUTION_NOTES TEXT
 )
 LANGUAGE SQL
-EXECUTE AS CALLER
 AS
 $$
 DECLARE
+    res RESULTSET;
     v_start TIMESTAMP_NTZ;
     v_end TIMESTAMP_NTZ;
-    res RESULTSET;
 BEGIN
     v_start := COALESCE(P_START_DATE::TIMESTAMP_NTZ, DATEADD(DAY, -90, CURRENT_TIMESTAMP()));
     v_end := COALESCE(P_END_DATE::TIMESTAMP_NTZ, CURRENT_TIMESTAMP());
@@ -942,205 +962,313 @@ $$;
  * RBAC STORED PROCEDURE: Resolve Policy Violation
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_RESOLVE_POLICY_VIOLATION(
+CREATE OR REPLACE PROCEDURE ADMIN.CLONES.RBAC_RESOLVE_POLICY_VIOLATION(
     P_VIOLATION_ID VARCHAR,
     P_RESOLUTION_NOTES TEXT
 )
 RETURNS VARIANT
-LANGUAGE SQL
+LANGUAGE JAVASCRIPT
 EXECUTE AS CALLER
 AS
 $$
-BEGIN
-    UPDATE RBAC_CLONE_POLICY_VIOLATIONS
-    SET STATUS = 'RESOLVED',
-        RESOLVED_BY = CURRENT_USER(),
-        RESOLVED_AT = CURRENT_TIMESTAMP(),
-        RESOLUTION_NOTES = P_RESOLUTION_NOTES
-    WHERE VIOLATION_ID = P_VIOLATION_ID;
+    // Update violation status
+    var updateStmt = snowflake.createStatement({
+        sqlText: `UPDATE RBAC_CLONE_POLICY_VIOLATIONS
+                  SET STATUS = 'RESOLVED',
+                      RESOLVED_BY = CURRENT_USER(),
+                      RESOLVED_AT = CURRENT_TIMESTAMP(),
+                      RESOLUTION_NOTES = ?
+                  WHERE VIOLATION_ID = ?`,
+        binds: [P_RESOLUTION_NOTES, P_VIOLATION_ID]
+    });
+    updateStmt.execute();
     
-    IF (SELECT COUNT(*) FROM RBAC_CLONE_POLICY_VIOLATIONS WHERE VIOLATION_ID = P_VIOLATION_ID) = 0 THEN
-        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', 'Violation not found');
-    END IF;
+    // Check if violation exists
+    var checkStmt = snowflake.createStatement({
+        sqlText: `SELECT COUNT(*) AS CNT FROM RBAC_CLONE_POLICY_VIOLATIONS WHERE VIOLATION_ID = ?`,
+        binds: [P_VIOLATION_ID]
+    });
+    var rs = checkStmt.execute();
+    rs.next();
     
-    RETURN OBJECT_CONSTRUCT(
-        'status', 'SUCCESS',
-        'violation_id', P_VIOLATION_ID,
-        'resolved_by', CURRENT_USER(),
-        'message', 'Violation marked as resolved'
-    );
-
-EXCEPTION
-    WHEN OTHER THEN
-        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', SQLERRM);
-END;
+    if (rs.getColumnValue(1) === 0) {
+        return {
+            status: 'ERROR',
+            message: 'Violation not found'
+        };
+    }
+    
+    // Get current user
+    var userStmt = snowflake.createStatement({
+        sqlText: `SELECT CURRENT_USER()`
+    });
+    var userRs = userStmt.execute();
+    userRs.next();
+    var currentUser = userRs.getColumnValue(1);
+    
+    return {
+        status: 'SUCCESS',
+        violation_id: P_VIOLATION_ID,
+        resolved_by: currentUser,
+        message: 'Violation marked as resolved'
+    };
 $$;
 
 /*******************************************************************************
  * RBAC STORED PROCEDURE: Generate Clone Audit Report
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_GENERATE_CLONE_AUDIT_REPORT(
-    P_START_DATE DATE DEFAULT NULL,
-    P_END_DATE DATE DEFAULT NULL
+CREATE OR REPLACE PROCEDURE RBAC_GENERATE_CLONE_AUDIT_REPORT(
+    P_START_DATE DATE,
+    P_END_DATE DATE
 )
 RETURNS VARIANT
-LANGUAGE SQL
+LANGUAGE JAVASCRIPT
 EXECUTE AS CALLER
 AS
 $$
-DECLARE
-    v_start DATE;
-    v_end DATE;
-    v_summary VARIANT;
-    v_by_operation VARIANT;
-    v_by_user VARIANT;
-    v_by_environment VARIANT;
-    v_policy_violations VARIANT;
-    v_top_clone_creators VARIANT;
-BEGIN
-    v_start := COALESCE(P_START_DATE, DATEADD(DAY, -30, CURRENT_DATE()));
-    v_end := COALESCE(P_END_DATE, CURRENT_DATE());
+    var start = P_START_DATE;
+    var end = P_END_DATE;
     
-    -- Summary statistics
-    SELECT OBJECT_CONSTRUCT(
-        'total_operations', COUNT(*),
-        'successful', COUNT_IF(STATUS = 'SUCCESS'),
-        'failed', COUNT_IF(STATUS != 'SUCCESS'),
-        'creates', COUNT_IF(OPERATION = 'CREATE'),
-        'deletes', COUNT_IF(OPERATION = 'DELETE'),
-        'unique_users', COUNT(DISTINCT PERFORMED_BY)
-    ) INTO v_summary
-    FROM RBAC_CLONE_AUDIT_LOG
-    WHERE TIMESTAMP::DATE BETWEEN v_start AND v_end;
+    // Set defaults if not provided
+    if (!start) {
+        var stmt = snowflake.createStatement({
+            sqlText: "SELECT DATEADD(DAY, -30, CURRENT_DATE())"
+        });
+        var rs = stmt.execute();
+        rs.next();
+        start = rs.getColumnValue(1);
+    }
     
-    -- By operation
-    SELECT OBJECT_AGG(OPERATION, CNT) INTO v_by_operation
-    FROM (
-        SELECT OPERATION, COUNT(*) AS CNT
+    if (!end) {
+        var stmt = snowflake.createStatement({
+            sqlText: "SELECT CURRENT_DATE()"
+        });
+        var rs = stmt.execute();
+        rs.next();
+        end = rs.getColumnValue(1);
+    }
+    
+    // Summary statistics
+    var summaryStmt = snowflake.createStatement({
+        sqlText: `SELECT 
+            COUNT(*) AS total_operations,
+            COUNT_IF(STATUS = 'SUCCESS') AS successful,
+            COUNT_IF(STATUS != 'SUCCESS') AS failed,
+            COUNT_IF(OPERATION = 'CREATE') AS creates,
+            COUNT_IF(OPERATION = 'DELETE') AS deletes,
+            COUNT(DISTINCT PERFORMED_BY) AS unique_users
         FROM RBAC_CLONE_AUDIT_LOG
-        WHERE TIMESTAMP::DATE BETWEEN v_start AND v_end
-        GROUP BY OPERATION
-    );
+        WHERE TIMESTAMP::DATE BETWEEN ? AND ?`,
+        binds: [start, end]
+    });
+    var summaryRs = summaryStmt.execute();
+    summaryRs.next();
+    var summary = {
+        total_operations: summaryRs.getColumnValue('TOTAL_OPERATIONS'),
+        successful: summaryRs.getColumnValue('SUCCESSFUL'),
+        failed: summaryRs.getColumnValue('FAILED'),
+        creates: summaryRs.getColumnValue('CREATES'),
+        deletes: summaryRs.getColumnValue('DELETES'),
+        unique_users: summaryRs.getColumnValue('UNIQUE_USERS')
+    };
     
-    -- By user (top 10)
-    SELECT ARRAY_AGG(OBJECT_CONSTRUCT('user', PERFORMED_BY, 'operations', CNT)) INTO v_by_user
-    FROM (
-        SELECT PERFORMED_BY, COUNT(*) AS CNT
+    // By operation
+    var byOpStmt = snowflake.createStatement({
+        sqlText: `SELECT OPERATION, COUNT(*) AS CNT
         FROM RBAC_CLONE_AUDIT_LOG
-        WHERE TIMESTAMP::DATE BETWEEN v_start AND v_end
+        WHERE TIMESTAMP::DATE BETWEEN ? AND ?
+        GROUP BY OPERATION`,
+        binds: [start, end]
+    });
+    var byOperation = {};
+    var byOpRs = byOpStmt.execute();
+    while (byOpRs.next()) {
+        byOperation[byOpRs.getColumnValue('OPERATION')] = byOpRs.getColumnValue('CNT');
+    }
+    
+    // By user (top 10)
+    var byUserStmt = snowflake.createStatement({
+        sqlText: `SELECT PERFORMED_BY, COUNT(*) AS CNT
+        FROM RBAC_CLONE_AUDIT_LOG
+        WHERE TIMESTAMP::DATE BETWEEN ? AND ?
         GROUP BY PERFORMED_BY
         ORDER BY CNT DESC
-        LIMIT 10
-    );
+        LIMIT 10`,
+        binds: [start, end]
+    });
+    var topUsers = [];
+    var byUserRs = byUserStmt.execute();
+    while (byUserRs.next()) {
+        topUsers.push({
+            user: byUserRs.getColumnValue('PERFORMED_BY'),
+            operations: byUserRs.getColumnValue('CNT')
+        });
+    }
     
-    -- By environment
-    SELECT OBJECT_AGG(COALESCE(ENVIRONMENT, 'N/A'), CNT) INTO v_by_environment
-    FROM (
-        SELECT ENVIRONMENT, COUNT(*) AS CNT
+    // By environment
+    var byEnvStmt = snowflake.createStatement({
+        sqlText: `SELECT COALESCE(ENVIRONMENT, 'N/A') AS ENV, COUNT(*) AS CNT
         FROM RBAC_CLONE_AUDIT_LOG
-        WHERE TIMESTAMP::DATE BETWEEN v_start AND v_end
-        GROUP BY ENVIRONMENT
-    );
+        WHERE TIMESTAMP::DATE BETWEEN ? AND ?
+        GROUP BY ENVIRONMENT`,
+        binds: [start, end]
+    });
+    var byEnvironment = {};
+    var byEnvRs = byEnvStmt.execute();
+    while (byEnvRs.next()) {
+        byEnvironment[byEnvRs.getColumnValue('ENV')] = byEnvRs.getColumnValue('CNT');
+    }
     
-    -- Policy violations summary
-    SELECT OBJECT_CONSTRUCT(
-        'total_violations', COUNT(*),
-        'open', COUNT_IF(STATUS = 'OPEN'),
-        'resolved', COUNT_IF(STATUS = 'RESOLVED'),
-        'critical', COUNT_IF(SEVERITY = 'CRITICAL'),
-        'error', COUNT_IF(SEVERITY = 'ERROR'),
-        'warning', COUNT_IF(SEVERITY = 'WARNING')
-    ) INTO v_policy_violations
-    FROM RBAC_CLONE_POLICY_VIOLATIONS
-    WHERE TIMESTAMP::DATE BETWEEN v_start AND v_end;
+    // Policy violations summary
+    var violationsStmt = snowflake.createStatement({
+        sqlText: `SELECT 
+            COUNT(*) AS total_violations,
+            COUNT_IF(STATUS = 'OPEN') AS open,
+            COUNT_IF(STATUS = 'RESOLVED') AS resolved,
+            COUNT_IF(SEVERITY = 'CRITICAL') AS critical,
+            COUNT_IF(SEVERITY = 'ERROR') AS error,
+            COUNT_IF(SEVERITY = 'WARNING') AS warning
+        FROM RBAC_CLONE_POLICY_VIOLATIONS
+        WHERE TIMESTAMP::DATE BETWEEN ? AND ?`,
+        binds: [start, end]
+    });
+    var violationsRs = violationsStmt.execute();
+    violationsRs.next();
+    var policyViolations = {
+        total_violations: violationsRs.getColumnValue('TOTAL_VIOLATIONS'),
+        open: violationsRs.getColumnValue('OPEN'),
+        resolved: violationsRs.getColumnValue('RESOLVED'),
+        critical: violationsRs.getColumnValue('CRITICAL'),
+        error: violationsRs.getColumnValue('ERROR'),
+        warning: violationsRs.getColumnValue('WARNING')
+    };
     
-    RETURN OBJECT_CONSTRUCT(
-        'report_period', OBJECT_CONSTRUCT('start', v_start, 'end', v_end),
-        'summary', v_summary,
-        'by_operation', v_by_operation,
-        'top_users', v_by_user,
-        'by_environment', v_by_environment,
-        'policy_violations', v_policy_violations,
-        'generated_at', CURRENT_TIMESTAMP(),
-        'generated_by', CURRENT_USER()
-    );
-
-EXCEPTION
-    WHEN OTHER THEN
-        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', SQLERRM);
-END;
+    // Get current timestamp and user
+    var tsStmt = snowflake.createStatement({
+        sqlText: "SELECT CURRENT_TIMESTAMP(), CURRENT_USER()"
+    });
+    var tsRs = tsStmt.execute();
+    tsRs.next();
+    var currentTimestamp = tsRs.getColumnValue(1);
+    var currentUser = tsRs.getColumnValue(2);
+    
+    return {
+        report_period: { start: start, end: end },
+        summary: summary,
+        by_operation: byOperation,
+        top_users: topUsers,
+        by_environment: byEnvironment,
+        policy_violations: policyViolations,
+        generated_at: currentTimestamp,
+        generated_by: currentUser
+    };
 $$;
 
 /*******************************************************************************
  * RBAC STORED PROCEDURE: Get User Clone Activity
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_GET_USER_CLONE_ACTIVITY(
-    P_USERNAME VARCHAR DEFAULT NULL,
-    P_DAYS_BACK INTEGER DEFAULT 30
+CREATE OR REPLACE PROCEDURE RBAC_GET_USER_CLONE_ACTIVITY(
+    P_USERNAME VARCHAR,
+    P_DAYS_BACK FLOAT
 )
 RETURNS VARIANT
-LANGUAGE SQL
+LANGUAGE JAVASCRIPT
 EXECUTE AS CALLER
 AS
 $$
-DECLARE
-    v_user VARCHAR;
-    v_activity VARIANT;
-    v_current_clones ARRAY;
-    v_recent_operations ARRAY;
-    v_violations ARRAY;
-BEGIN
-    v_user := COALESCE(P_USERNAME, CURRENT_USER());
+    var user = P_USERNAME;
+    var daysBack = P_DAYS_BACK || 30;
     
-    -- Current active clones
-    SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
-        'clone_name', CLONE_NAME,
-        'environment', ENVIRONMENT,
-        'created_at', CREATED_AT,
-        'age_days', DATEDIFF(DAY, CREATED_AT, CURRENT_TIMESTAMP())
-    )) INTO v_current_clones
-    FROM RBAC_CLONE_REGISTRY
-    WHERE CREATED_BY = v_user AND STATUS = 'ACTIVE';
+    // Set default user if not provided
+    if (!user) {
+        var userStmt = snowflake.createStatement({
+            sqlText: "SELECT CURRENT_USER()"
+        });
+        var userRs = userStmt.execute();
+        userRs.next();
+        user = userRs.getColumnValue(1);
+    }
     
-    -- Recent operations
-    SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
-        'operation', OPERATION,
-        'clone_name', CLONE_NAME,
-        'timestamp', TIMESTAMP,
-        'status', STATUS
-    )) INTO v_recent_operations
-    FROM RBAC_CLONE_AUDIT_LOG
-    WHERE PERFORMED_BY = v_user
-      AND TIMESTAMP >= DATEADD(DAY, -P_DAYS_BACK, CURRENT_TIMESTAMP())
-    ORDER BY TIMESTAMP DESC
-    LIMIT 50;
+    // Current active clones
+    var clonesStmt = snowflake.createStatement({
+        sqlText: `SELECT 
+            CLONE_NAME,
+            ENVIRONMENT,
+            CREATED_AT,
+            DATEDIFF(DAY, CREATED_AT, CURRENT_TIMESTAMP()) AS age_days
+        FROM RBAC_CLONE_REGISTRY
+        WHERE CREATED_BY = ? AND STATUS = 'ACTIVE'`,
+        binds: [user]
+    });
+    var currentClones = [];
+    var clonesRs = clonesStmt.execute();
+    while (clonesRs.next()) {
+        currentClones.push({
+            clone_name: clonesRs.getColumnValue('CLONE_NAME'),
+            environment: clonesRs.getColumnValue('ENVIRONMENT'),
+            created_at: clonesRs.getColumnValue('CREATED_AT'),
+            age_days: clonesRs.getColumnValue('AGE_DAYS')
+        });
+    }
     
-    -- Policy violations
-    SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
-        'policy_name', POLICY_NAME,
-        'timestamp', TIMESTAMP,
-        'severity', SEVERITY,
-        'status', STATUS
-    )) INTO v_violations
-    FROM RBAC_CLONE_POLICY_VIOLATIONS
-    WHERE VIOLATED_BY = v_user
-      AND TIMESTAMP >= DATEADD(DAY, -P_DAYS_BACK, CURRENT_TIMESTAMP());
+    // Recent operations
+    var opsStmt = snowflake.createStatement({
+        sqlText: `SELECT 
+            OPERATION,
+            CLONE_NAME,
+            TIMESTAMP,
+            STATUS
+        FROM RBAC_CLONE_AUDIT_LOG
+        WHERE PERFORMED_BY = ?
+          AND TIMESTAMP >= DATEADD(DAY, ?, CURRENT_TIMESTAMP())
+        ORDER BY TIMESTAMP DESC
+        LIMIT 50`,
+        binds: [user, -daysBack]
+    });
+    var recentOperations = [];
+    var opsRs = opsStmt.execute();
+    while (opsRs.next()) {
+        recentOperations.push({
+            operation: opsRs.getColumnValue('OPERATION'),
+            clone_name: opsRs.getColumnValue('CLONE_NAME'),
+            timestamp: opsRs.getColumnValue('TIMESTAMP'),
+            status: opsRs.getColumnValue('STATUS')
+        });
+    }
     
-    RETURN OBJECT_CONSTRUCT(
-        'user', v_user,
-        'active_clones', COALESCE(v_current_clones, ARRAY_CONSTRUCT()),
-        'active_clone_count', ARRAY_SIZE(COALESCE(v_current_clones, ARRAY_CONSTRUCT())),
-        'recent_operations', COALESCE(v_recent_operations, ARRAY_CONSTRUCT()),
-        'policy_violations', COALESCE(v_violations, ARRAY_CONSTRUCT()),
-        'days_analyzed', P_DAYS_BACK
-    );
-
-EXCEPTION
-    WHEN OTHER THEN
-        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', SQLERRM);
-END;
+    // Policy violations
+    var violationsStmt = snowflake.createStatement({
+        sqlText: `SELECT 
+            POLICY_NAME,
+            TIMESTAMP,
+            SEVERITY,
+            STATUS
+        FROM RBAC_CLONE_POLICY_VIOLATIONS
+        WHERE VIOLATED_BY = ?
+          AND TIMESTAMP >= DATEADD(DAY, ?, CURRENT_TIMESTAMP())`,
+        binds: [user, -daysBack]
+    });
+    var violations = [];
+    var violationsRs = violationsStmt.execute();
+    while (violationsRs.next()) {
+        violations.push({
+            policy_name: violationsRs.getColumnValue('POLICY_NAME'),
+            timestamp: violationsRs.getColumnValue('TIMESTAMP'),
+            severity: violationsRs.getColumnValue('SEVERITY'),
+            status: violationsRs.getColumnValue('STATUS')
+        });
+    }
+    
+    return {
+        user: user,
+        active_clones: currentClones,
+        active_clone_count: currentClones.length,
+        recent_operations: recentOperations,
+        policy_violations: violations,
+        days_analyzed: daysBack
+    };
 $$;
 
 -- #############################################################################
@@ -1151,63 +1279,89 @@ $$;
  * RBAC STORED PROCEDURE: Purge Old Audit Records
  ******************************************************************************/
 
-CREATE OR REPLACE SECURE PROCEDURE RBAC_PURGE_CLONE_AUDIT_RECORDS(
-    P_RETENTION_DAYS INTEGER DEFAULT 365,
-    P_DRY_RUN BOOLEAN DEFAULT TRUE
+CREATE OR REPLACE PROCEDURE ADMIN.CLONES.RBAC_PURGE_CLONE_AUDIT_RECORDS(
+    P_RETENTION_DAYS FLOAT,
+    P_DRY_RUN BOOLEAN
 )
 RETURNS VARIANT
-LANGUAGE SQL
+LANGUAGE JAVASCRIPT
 EXECUTE AS CALLER
 AS
 $$
-DECLARE
-    v_cutoff_date TIMESTAMP_NTZ;
-    v_audit_count INTEGER;
-    v_violation_count INTEGER;
-    v_access_count INTEGER;
-BEGIN
-    v_cutoff_date := DATEADD(DAY, -P_RETENTION_DAYS, CURRENT_TIMESTAMP());
+    var retentionDays = P_RETENTION_DAYS || 365;
+    var dryRun = (P_DRY_RUN === null || P_DRY_RUN === undefined) ? true : P_DRY_RUN;
     
-    -- Count records to be purged
-    SELECT COUNT(*) INTO v_audit_count
-    FROM RBAC_CLONE_AUDIT_LOG
-    WHERE TIMESTAMP < v_cutoff_date;
+    // Calculate cutoff date
+    var cutoffStmt = snowflake.createStatement({
+        sqlText: "SELECT DATEADD(DAY, ?, CURRENT_TIMESTAMP())",
+        binds: [-retentionDays]
+    });
+    var cutoffRs = cutoffStmt.execute();
+    cutoffRs.next();
+    var cutoffDate = cutoffRs.getColumnValue(1);
     
-    SELECT COUNT(*) INTO v_violation_count
-    FROM RBAC_CLONE_POLICY_VIOLATIONS
-    WHERE TIMESTAMP < v_cutoff_date AND STATUS = 'RESOLVED';
+    // Count records to be purged - audit log
+    var auditCountStmt = snowflake.createStatement({
+        sqlText: "SELECT COUNT(*) AS CNT FROM RBAC_CLONE_AUDIT_LOG WHERE TIMESTAMP < ?",
+        binds: [cutoffDate]
+    });
+    var auditCountRs = auditCountStmt.execute();
+    auditCountRs.next();
+    var auditCount = auditCountRs.getColumnValue('CNT');
     
-    SELECT COUNT(*) INTO v_access_count
-    FROM RBAC_CLONE_ACCESS_LOG
-    WHERE TIMESTAMP < v_cutoff_date;
+    // Count records to be purged - violations
+    var violationCountStmt = snowflake.createStatement({
+        sqlText: "SELECT COUNT(*) AS CNT FROM RBAC_CLONE_POLICY_VIOLATIONS WHERE TIMESTAMP < ? AND STATUS = 'RESOLVED'",
+        binds: [cutoffDate]
+    });
+    var violationCountRs = violationCountStmt.execute();
+    violationCountRs.next();
+    var violationCount = violationCountRs.getColumnValue('CNT');
     
-    IF NOT P_DRY_RUN THEN
-        DELETE FROM RBAC_CLONE_AUDIT_LOG WHERE TIMESTAMP < v_cutoff_date;
-        DELETE FROM RBAC_CLONE_POLICY_VIOLATIONS WHERE TIMESTAMP < v_cutoff_date AND STATUS = 'RESOLVED';
-        DELETE FROM RBAC_CLONE_ACCESS_LOG WHERE TIMESTAMP < v_cutoff_date;
-    END IF;
+    // Count records to be purged - access log
+    var accessCountStmt = snowflake.createStatement({
+        sqlText: "SELECT COUNT(*) AS CNT FROM RBAC_CLONE_ACCESS_LOG WHERE TIMESTAMP < ?",
+        binds: [cutoffDate]
+    });
+    var accessCountRs = accessCountStmt.execute();
+    accessCountRs.next();
+    var accessCount = accessCountRs.getColumnValue('CNT');
     
-    RETURN OBJECT_CONSTRUCT(
-        'status', 'SUCCESS',
-        'mode', IFF(P_DRY_RUN, 'DRY_RUN', 'EXECUTED'),
-        'retention_days', P_RETENTION_DAYS,
-        'cutoff_date', v_cutoff_date,
-        'records_affected', OBJECT_CONSTRUCT(
-            'audit_log', v_audit_count,
-            'violations', v_violation_count,
-            'access_log', v_access_count,
-            'total', v_audit_count + v_violation_count + v_access_count
-        ),
-        'message', IFF(P_DRY_RUN, 
-            'Dry run complete. Set P_DRY_RUN=FALSE to purge records.',
-            'Audit records older than ' || P_RETENTION_DAYS || ' days have been purged.'
-        )
-    );
-
-EXCEPTION
-    WHEN OTHER THEN
-        RETURN OBJECT_CONSTRUCT('status', 'ERROR', 'message', SQLERRM);
-END;
+    // Perform actual deletion if not dry run
+    if (!dryRun) {
+        snowflake.createStatement({
+            sqlText: "DELETE FROM RBAC_CLONE_AUDIT_LOG WHERE TIMESTAMP < ?",
+            binds: [cutoffDate]
+        }).execute();
+        
+        snowflake.createStatement({
+            sqlText: "DELETE FROM RBAC_CLONE_POLICY_VIOLATIONS WHERE TIMESTAMP < ? AND STATUS = 'RESOLVED'",
+            binds: [cutoffDate]
+        }).execute();
+        
+        snowflake.createStatement({
+            sqlText: "DELETE FROM RBAC_CLONE_ACCESS_LOG WHERE TIMESTAMP < ?",
+            binds: [cutoffDate]
+        }).execute();
+    }
+    
+    var message = dryRun 
+        ? 'Dry run complete. Set P_DRY_RUN=FALSE to purge records.'
+        : 'Audit records older than ' + retentionDays + ' days have been purged.';
+    
+    return {
+        status: 'SUCCESS',
+        mode: dryRun ? 'DRY_RUN' : 'EXECUTED',
+        retention_days: retentionDays,
+        cutoff_date: cutoffDate,
+        records_affected: {
+            audit_log: auditCount,
+            violations: violationCount,
+            access_log: accessCount,
+            total: auditCount + violationCount + accessCount
+        },
+        message: message
+    };
 $$;
 
 -- #############################################################################
@@ -1216,28 +1370,28 @@ $$;
 
 -- Audit logging (internal use)
 GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_LOG_CLONE_OPERATION(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, TEXT, VARIANT) TO ROLE SRS_SYSTEM_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_LOG_CLONE_ACCESS(VARCHAR, VARCHAR, VARCHAR, VARCHAR, INTEGER) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_LOG_CLONE_ACCESS(VARCHAR, VARCHAR, VARCHAR, VARCHAR, INTEGER) TO ROLE SRS_SYSTEM_ADMIN;
 
 -- Policy management (admin only)
-GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_CREATE_CLONE_POLICY(VARCHAR, VARCHAR, VARCHAR, TEXT, VARIANT, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_CREATE_CLONE_POLICY(VARCHAR, VARCHAR, VARIANT, VARCHAR, TEXT, VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
 GRANT USAGE ON PROCEDURE RBAC_SETUP_DEFAULT_CLONE_POLICIES() TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_LIST_CLONE_POLICIES(VARCHAR, VARCHAR, BOOLEAN) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_LIST_CLONE_POLICIES(VARCHAR, VARCHAR, BOOLEAN) TO ROLE SRS_SECURITY_ADMIN;
 GRANT USAGE ON PROCEDURE RBAC_SET_POLICY_STATUS(VARCHAR, BOOLEAN) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_DELETE_CLONE_POLICY(VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_DELETE_CLONE_POLICY(VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
 
 -- Policy enforcement
-GRANT USAGE ON PROCEDURE RBAC_CHECK_CLONE_POLICIES(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_CHECK_CLONE_POLICIES(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR) TO ROLE SRS_SYSTEM_ADMIN;
 GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_CHECK_CLONE_COMPLIANCE(VARCHAR) TO ROLE SRS_SECURITY_ADMIN;
 
 -- Audit reporting
 GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_GET_CLONE_AUDIT_LOG(DATE, DATE, VARCHAR, VARCHAR, VARCHAR, INTEGER) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_GET_POLICY_VIOLATIONS(VARCHAR, VARCHAR, DATE, DATE) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_RESOLVE_POLICY_VIOLATION(VARCHAR, TEXT) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_GET_POLICY_VIOLATIONS(VARCHAR, VARCHAR, DATE, DATE) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_RESOLVE_POLICY_VIOLATION(VARCHAR, TEXT) TO ROLE SRS_SECURITY_ADMIN;
 GRANT USAGE ON PROCEDURE RBAC_GENERATE_CLONE_AUDIT_REPORT(DATE, DATE) TO ROLE SRS_SECURITY_ADMIN;
-GRANT USAGE ON PROCEDURE RBAC_GET_USER_CLONE_ACTIVITY(VARCHAR, INTEGER) TO ROLE SRS_SECURITY_ADMIN;
+GRANT USAGE ON PROCEDURE RBAC_GET_USER_CLONE_ACTIVITY(VARCHAR, FLOAT) TO ROLE SRS_SECURITY_ADMIN;
 
 -- Allow users to see their own activity
-GRANT USAGE ON PROCEDURE RBAC_GET_USER_CLONE_ACTIVITY(VARCHAR, INTEGER) TO ROLE PUBLIC;
+GRANT USAGE ON PROCEDURE RBAC_GET_USER_CLONE_ACTIVITY(VARCHAR, FLOAT) TO ROLE PUBLIC;
 
 -- Maintenance
-GRANT USAGE ON PROCEDURE RBAC_PURGE_CLONE_AUDIT_RECORDS(INTEGER, BOOLEAN) TO ROLE SRS_SYSTEM_ADMIN;
+GRANT USAGE ON PROCEDURE ADMIN.CLONES.RBAC_PURGE_CLONE_AUDIT_RECORDS(FLOAT, BOOLEAN) TO ROLE SRS_SYSTEM_ADMIN;
