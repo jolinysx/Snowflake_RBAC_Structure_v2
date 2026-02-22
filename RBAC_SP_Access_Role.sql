@@ -140,7 +140,8 @@ DECLARE
     v_db_role VARCHAR;
     v_is_dev BOOLEAN;
     v_sql VARCHAR;
-    v_access_role_exists BOOLEAN;
+    v_role_check_result RESULTSET;
+    v_access_role_exists BOOLEAN := FALSE;
 BEGIN
     -- Validate environment
     IF (P_ENVIRONMENT NOT IN ('DEV', 'TST', 'UAT', 'PPE', 'PRD')) THEN
@@ -173,11 +174,13 @@ BEGIN
     v_full_db_name := P_DATABASE_NAME || '_' || P_ENVIRONMENT;
     v_db_role := 'SRD_' || v_full_db_name || '_' || P_SCHEMA_NAME || '_' || P_ACCESS_LEVEL;
     
-    -- Verify access role exists
-    SELECT COUNT(*) > 0 INTO :v_access_role_exists
-    FROM SNOWFLAKE.ACCOUNT_USAGE.ROLES
-    WHERE NAME = :v_access_role
-      AND DELETED_ON IS NULL;
+    -- Verify access role exists (FIXED: Using SHOW ROLES for real-time validation instead of ACCOUNT_USAGE)
+    v_sql := 'SHOW ROLES LIKE ''' || v_access_role || '''';
+    v_role_check_result := (EXECUTE IMMEDIATE :v_sql);
+    LET c1 CURSOR FOR v_role_check_result;
+    FOR record IN c1 DO
+        v_access_role_exists := TRUE;
+    END FOR;
     
     IF (NOT v_access_role_exists) THEN
         RETURN OBJECT_CONSTRUCT(
