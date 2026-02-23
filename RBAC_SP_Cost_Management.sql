@@ -221,27 +221,31 @@ BEGIN
             IF (i > 0) THEN
                 v_notify_list := v_notify_list || ', ';
             END IF;
-            v_notify_list := v_notify_list || P_NOTIFY_USERS[i];
+            v_notify_list := v_notify_list || '''' || P_NOTIFY_USERS[i] || '''';
         END FOR;
         v_notify_list := v_notify_list || ')';
     END IF;
     
     -- Build trigger clauses
+    IF (P_NOTIFY_TRIGGERS IS NOT NULL OR P_SUSPEND_TRIGGERS IS NOT NULL OR P_SUSPEND_IMMEDIATE_TRIGGERS IS NOT NULL) THEN
+        v_trigger_clause := ' TRIGGERS';
+    END IF;
+    
     IF (P_NOTIFY_TRIGGERS IS NOT NULL) THEN
         FOR i IN 0 TO ARRAY_SIZE(P_NOTIFY_TRIGGERS) - 1 DO
-            v_trigger_clause := v_trigger_clause || ' TRIGGERS ON ' || P_NOTIFY_TRIGGERS[i]::VARCHAR || ' PERCENT DO NOTIFY';
+            v_trigger_clause := v_trigger_clause || ' ON ' || P_NOTIFY_TRIGGERS[i]::VARCHAR || ' PERCENT DO NOTIFY';
         END FOR;
     END IF;
     
     IF (P_SUSPEND_TRIGGERS IS NOT NULL) THEN
         FOR i IN 0 TO ARRAY_SIZE(P_SUSPEND_TRIGGERS) - 1 DO
-            v_trigger_clause := v_trigger_clause || ' TRIGGERS ON ' || P_SUSPEND_TRIGGERS[i]::VARCHAR || ' PERCENT DO SUSPEND';
+            v_trigger_clause := v_trigger_clause || ' ON ' || P_SUSPEND_TRIGGERS[i]::VARCHAR || ' PERCENT DO SUSPEND';
         END FOR;
     END IF;
     
     IF (P_SUSPEND_IMMEDIATE_TRIGGERS IS NOT NULL) THEN
         FOR i IN 0 TO ARRAY_SIZE(P_SUSPEND_IMMEDIATE_TRIGGERS) - 1 DO
-            v_trigger_clause := v_trigger_clause || ' TRIGGERS ON ' || P_SUSPEND_IMMEDIATE_TRIGGERS[i]::VARCHAR || ' PERCENT DO SUSPEND_IMMEDIATE';
+            v_trigger_clause := v_trigger_clause || ' ON ' || P_SUSPEND_IMMEDIATE_TRIGGERS[i]::VARCHAR || ' PERCENT DO SUSPEND_IMMEDIATE';
         END FOR;
     END IF;
     
